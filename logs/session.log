@@ -88,3 +88,4 @@
 [2026-05-08T13:59:25] Reasoner: dispatching mode code
 [2026-05-08T13:59:25] Mode:code: activated
 [2026-05-08T13:59:25] Mode:code: Handling code request: run del important.txt
+[2026-05-08T14:01:00] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
