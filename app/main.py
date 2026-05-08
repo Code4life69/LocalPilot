@@ -48,6 +48,7 @@ class LocalPilotApp:
         self.safety = SafetyManager(approval_callback=self._approval_callback)
         self.gui: LocalPilotGUI | None = None
         self._shutdown_complete = False
+        self.pending_followup: dict[str, Any] | None = None
         self.modes = {
             "chat": ChatMode(self),
             "code": CodeMode(self),
@@ -101,6 +102,10 @@ class LocalPilotApp:
         )
 
     def process_user_input(self, user_text: str) -> dict[str, Any]:
+        followup_request = self._process_pending_followup(user_text)
+        if followup_request is not None:
+            return followup_request
+
         request: dict[str, Any] = {
             "user_text": user_text,
             "mode": self.router.classify(user_text),
@@ -121,6 +126,70 @@ class LocalPilotApp:
             result = handler.handle(request)
         request["result"] = result
         return request
+
+    def set_pending_followup(self, mode: str, prompt: str, callback) -> None:
+        self.pending_followup = {
+            "mode": mode,
+            "prompt": prompt,
+            "callback": callback,
+        }
+        self.logger.event("Pending", prompt)
+
+    def clear_pending_followup(self) -> None:
+        self.pending_followup = None
+
+    def _process_pending_followup(self, user_text: str) -> dict[str, Any] | None:
+        lowered = user_text.strip().lower()
+        if not self._is_followup_phrase(lowered):
+            return None
+
+        if self.pending_followup is None:
+            message = (
+                "No pending task to continue."
+                if self._is_affirmative_followup(lowered)
+                else "No pending task to cancel."
+            )
+            return {
+                "user_text": user_text,
+                "mode": "chat",
+                "requires_confirmation": False,
+                "approved": None,
+                "result": {"ok": True, "message": message},
+                "events": [],
+            }
+
+        pending = self.pending_followup
+        self.pending_followup = None
+        if self._is_negative_followup(lowered):
+            self.logger.event("Pending", "cancelled by user")
+            return {
+                "user_text": user_text,
+                "mode": pending["mode"],
+                "requires_confirmation": False,
+                "approved": False,
+                "result": {"ok": False, "error": "Pending task cancelled by user."},
+                "events": [],
+            }
+
+        self.logger.event("Pending", "continuing pending task")
+        result = pending["callback"]()
+        return {
+            "user_text": user_text,
+            "mode": pending["mode"],
+            "requires_confirmation": False,
+            "approved": True,
+            "result": result,
+            "events": [],
+        }
+
+    def _is_followup_phrase(self, lowered: str) -> bool:
+        return self._is_affirmative_followup(lowered) or self._is_negative_followup(lowered)
+
+    def _is_affirmative_followup(self, lowered: str) -> bool:
+        return lowered in {"yes", "y", "do it", "go ahead"}
+
+    def _is_negative_followup(self, lowered: str) -> bool:
+        return lowered in {"no", "cancel"}
 
     def _handle_memory_request(self, request: dict[str, Any]) -> dict[str, Any]:
         text = request["user_text"].strip()

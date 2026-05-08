@@ -50,6 +50,28 @@ def test_notepad_request_without_explicit_folder_creates_default_project(tmp_pat
     assert "Double-click Run Notepad.bat" in result["message"]
 
 
+def test_website_request_creates_expected_static_files(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle(
+        {
+            "user_text": "I want you to make me a website locally on my pc in a new folder make it basic"
+        }
+    )
+
+    assert result["ok"]
+    project_path = Path(result["project_path"])
+    assert project_path.name.startswith("Website_")
+    assert (project_path / "index.html").exists()
+    assert (project_path / "style.css").exists()
+    assert (project_path / "script.js").exists()
+    assert (project_path / "Run Website.bat").exists()
+    assert (project_path / "README.txt").exists()
+    assert result["verification"]["static_files_verified"] is True
+    assert "Double-click Run Website.bat" in result["message"]
+
+
 def test_generated_app_verification_uses_latest_matching_folder(tmp_path):
     app = DummyApp(tmp_path)
     mode = CodeMode(app)
@@ -65,6 +87,7 @@ def test_generated_app_verification_uses_latest_matching_folder(tmp_path):
 
 def test_supported_app_kind_detection():
     mode = CodeMode(DummyApp(Path(".")))
+    assert mode._detect_supported_app_kind("make me a basic website") == "website"
     assert mode._detect_supported_app_kind("make me a todo list app") == "todo"
     assert mode._detect_supported_app_kind("make me a notepad app") == "notepad"
     assert mode._detect_supported_app_kind("make me a timer app") == "timer"
@@ -79,6 +102,6 @@ def test_app_scaffold_request_requires_real_app_language():
 
 def test_all_templates_have_required_files():
     for template in APP_TEMPLATES.values():
-        assert template["main_filename"] == "main.py"
+        assert template["main_filename"] in {"main.py", "index.html"}
         assert template["launcher_name"].endswith(".bat")
         assert template["readme_name"] == "README.txt"
