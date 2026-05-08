@@ -125,3 +125,28 @@
 [2026-05-08T14:32:18] Mode:memory: activated
 [2026-05-08T14:32:18] Memory: Handling memory request: show notes
 [2026-05-08T14:39:07] Reasoner: Ollama server is running. Active text model: qwen3:30b.
+[2026-05-08T14:39:09] Router: classified as chat | {"user_text": "what can you do"}
+[2026-05-08T14:39:09] Reasoner: dispatching mode chat
+[2026-05-08T14:39:09] Mode:chat: activated
+[2026-05-08T14:39:09] Router: classified as memory | {"user_text": "show notes"}
+[2026-05-08T14:39:09] Reasoner: dispatching mode memory
+[2026-05-08T14:39:09] Mode:memory: activated
+[2026-05-08T14:39:09] Memory: Handling memory request: show notes
+[2026-05-08T14:39:09] Router: classified as memory | {"user_text": "search notes LocalPilot"}
+[2026-05-08T14:39:09] Reasoner: dispatching mode memory
+[2026-05-08T14:39:09] Mode:memory: activated
+[2026-05-08T14:39:09] Memory: Handling memory request: search notes LocalPilot
+[2026-05-08T14:39:09] Router: classified as memory | {"user_text": "save note GUI polish test"}
+[2026-05-08T14:39:09] Reasoner: dispatching mode memory
+[2026-05-08T14:39:09] Mode:memory: activated
+[2026-05-08T14:39:09] Memory: Handling memory request: save note GUI polish test
+[2026-05-08T14:39:09] Router: classified as memory | {"user_text": "show notes"}
+[2026-05-08T14:39:09] Reasoner: dispatching mode memory
+[2026-05-08T14:39:09] Mode:memory: activated
+[2026-05-08T14:39:09] Memory: Handling memory request: show notes
+[2026-05-08T14:39:09] Router: classified as desktop | {"user_text": "get mouse position"}
+[2026-05-08T14:39:09] Reasoner: dispatching mode desktop
+[2026-05-08T14:39:09] Mode:desktop: activated
+[2026-05-08T14:39:10] Router: classified as desktop | {"user_text": "take screenshot"}
+[2026-05-08T14:39:10] Reasoner: dispatching mode desktop
+[2026-05-08T14:39:10] Mode:desktop: activated
