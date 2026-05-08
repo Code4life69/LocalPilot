@@ -7,9 +7,12 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+.env
+.DS_Store
+Thumbs.db
+
+logs/*
+!logs/.gitkeep
 
 workspace/*
 !workspace/.gitkeep
-!workspace/screenshots/
-workspace/screenshots/*
-!workspace/screenshots/.gitkeep
