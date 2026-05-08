@@ -54,3 +54,4 @@
 [2026-05-08T13:37:32] Reasoner: dispatching mode chat
 [2026-05-08T13:37:32] Mode:chat: activated
 [2026-05-08T13:44:08] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:45:56] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
