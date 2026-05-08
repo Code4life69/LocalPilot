@@ -236,6 +236,10 @@ class LocalPilotGUI:
         right = tk.Frame(body, bg=colors["bg"])
         body.add(left, stretch="always", minsize=720)
         body.add(right, minsize=360)
+        left.grid_rowconfigure(1, weight=1)
+        left.grid_columnconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=1)
+        right.grid_columnconfigure(0, weight=1)
 
         tk.Label(
             left,
@@ -243,11 +247,11 @@ class LocalPilotGUI:
             font=("Segoe UI", 11, "bold"),
             bg=colors["bg"],
             fg=colors["text"],
-        ).pack(anchor="w", pady=(0, 8))
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
         self.output = scrolledtext.ScrolledText(
             left,
             wrap=tk.WORD,
-            height=25,
+            height=20,
             font=("Segoe UI", 11),
             bg=colors["surface"],
             fg=colors["text"],
@@ -259,7 +263,7 @@ class LocalPilotGUI:
             spacing1=6,
             spacing3=10,
         )
-        self.output.pack(fill="both", expand=True)
+        self.output.grid(row=1, column=0, sticky="nsew")
         self.output.configure(state="disabled")
         self.output.tag_configure("user", font=("Segoe UI", 11, "bold"), foreground=colors["accent"])
         self.output.tag_configure("assistant", font=("Segoe UI", 11, "bold"), foreground=colors["success"])
@@ -267,7 +271,8 @@ class LocalPilotGUI:
         self.output.tag_configure("error", font=("Segoe UI", 11), foreground=colors["danger"])
 
         input_frame = tk.Frame(left, bg=colors["bg"])
-        input_frame.pack(fill="x", pady=(12, 0))
+        input_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        input_frame.grid_columnconfigure(0, weight=1)
         self.input_entry = tk.Entry(
             input_frame,
             font=("Segoe UI", 11),
@@ -277,13 +282,13 @@ class LocalPilotGUI:
             relief="flat",
             bd=0,
         )
-        self.input_entry.pack(side="left", fill="x", expand=True)
+        self.input_entry.grid(row=0, column=0, sticky="ew")
         self.input_entry.bind("<Return>", lambda _event: self.submit_input())
         send_button = ttk.Button(input_frame, text="Send", command=self.submit_input, style="Action.TButton")
-        send_button.pack(side="left", padx=(10, 0))
+        send_button.grid(row=0, column=1, padx=(10, 0))
 
         notebook = ttk.Notebook(right, style="Tabs.TNotebook")
-        notebook.pack(fill="both", expand=True)
+        notebook.grid(row=0, column=0, sticky="nsew")
 
         activity_tab = tk.Frame(notebook, bg=colors["bg"])
         logs_tab = tk.Frame(notebook, bg=colors["bg"])
@@ -299,6 +304,7 @@ class LocalPilotGUI:
         self.memory_text = self._make_panel_text(memory_tab, height=28)
         self._load_memory_panel()
         self._build_tools_tab(tools_tab)
+        self._load_default_panels()
 
         for widget in (self.output, self.timeline, self.logs, self.memory_text):
             widget.bind("<Key>", lambda _event: "break")
@@ -411,6 +417,11 @@ class LocalPilotGUI:
         self.output.configure(state="normal")
         self.output.delete("1.0", tk.END)
         self.output.configure(state="disabled")
+        self._append_chat_message(
+            "LocalPilot",
+            "Chat cleared. Ask me something or use the quick tools on the right.",
+            speaker_tag="assistant",
+        )
 
     def _refresh_status_bar(self) -> None:
         self.ollama_var.set(self.app.ollama.last_status.replace("_", " "))
@@ -430,6 +441,14 @@ class LocalPilotGUI:
     def _maybe_refresh_memory(self, result: dict[str, Any]) -> None:
         if any(key in result for key in ("content", "matches", "message")):
             self._load_memory_panel()
+
+    def _load_default_panels(self) -> None:
+        self._append_chat_message(
+            "LocalPilot",
+            "Ready. Try `what can you do`, `show notes`, or use the Tools tab for quick actions.",
+            speaker_tag="assistant",
+        )
+        self._append_readonly(self.logs, "Recent logs will appear here as the session runs.\n")
 
     def _theme_colors(self, theme: str) -> dict[str, str]:
         if theme == "light":
