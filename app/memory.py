@@ -34,7 +34,17 @@ class MemoryStore:
         if not needle:
             return []
         lines = self.notes_path.read_text(encoding="utf-8").splitlines()
-        return [line for line in lines if needle in line.lower()]
+        matches: list[str] = []
+        for line in lines:
+            normalized = line.strip()
+            if not normalized or normalized.startswith("#"):
+                continue
+            if needle not in normalized.lower():
+                continue
+            cleaned = normalized.lstrip("-* ").strip()
+            if cleaned:
+                matches.append(cleaned)
+        return matches
 
     def show_notes(self) -> str:
         return self.notes_path.read_text(encoding="utf-8")
@@ -50,4 +60,3 @@ class MemoryStore:
             json.dump(facts, handle, indent=2)
             handle.write("\n")
         return f"Saved fact: {key}"
-

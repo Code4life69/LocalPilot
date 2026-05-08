@@ -199,3 +199,4 @@
 {"timestamp": "2026-05-08T15:50:43", "role": "Router", "message": "classified as desktop", "extra": {"user_text": "take screenshot"}}
 {"timestamp": "2026-05-08T15:50:43", "role": "Reasoner", "message": "dispatching mode desktop", "extra": {}}
 {"timestamp": "2026-05-08T15:50:43", "role": "Mode:desktop", "message": "activated", "extra": {}}
+{"timestamp": "2026-05-08T15:55:08", "role": "Reasoner", "message": "Ollama server is running. Active text model: qwen3:30b.", "extra": {}}

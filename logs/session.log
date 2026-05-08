@@ -199,3 +199,4 @@
 [2026-05-08T15:50:43] Router: classified as desktop | {"user_text": "take screenshot"}
 [2026-05-08T15:50:43] Reasoner: dispatching mode desktop
 [2026-05-08T15:50:43] Mode:desktop: activated
+[2026-05-08T15:55:08] Reasoner: Ollama server is running. Active text model: qwen3:30b.
