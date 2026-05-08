@@ -3,7 +3,7 @@
   "purpose": "A local Windows AI assistant with explicit modes, local memory, safe tool use, and optional GUI visibility.",
   "model_roles": {
     "reasoning_chat": "qwen3:30b",
-    "vision": "qwen2.5-vl:7b"
+    "vision": "qwen2.5vl:7b"
   },
   "modes": [
     "chat",
@@ -63,7 +63,7 @@
     "Reasoning/chat and visual analysis intentionally use separate models."
   ],
   "todo": [
-    "Verify end-to-end qwen2.5-vl multimodal behavior with the installed Ollama build.",
+    "Verify end-to-end qwen2.5vl multimodal behavior with the installed Ollama build.",
     "Improve natural-language parsing for tool intents.",
     "Expand GUI controls without adding background autonomy."
   ]

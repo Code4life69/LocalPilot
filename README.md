@@ -25,19 +25,19 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ollama pull qwen3:30b
-ollama pull qwen2.5-vl:7b
+ollama pull qwen2.5vl:7b
 python localpilot.py
 ```
 
 ## Required Ollama Models
 
 - Main reasoning / chat model: `qwen3:30b`
-- Vision model: `qwen2.5-vl:7b`
+- Vision model: `qwen2.5vl:7b`
 
 LocalPilot keeps reasoning/chat and visual analysis separate by default:
 
 - `qwen3:30b` handles planning, coding, chat, and tool decisions
-- `qwen2.5-vl:7b` is reserved for screenshots and visual inspection
+- `qwen2.5vl:7b` is reserved for screenshots and visual inspection
 
 LocalPilot expects a reachable Ollama API, typically at `http://127.0.0.1:11434`.
 
@@ -138,7 +138,7 @@ C:\LocalPilot
 - Richer GUI controls for approvals and history filtering
 - Stronger Windows UI Automation control actions
 - Better structured learned facts updates
-- Full multimodal Ollama verification for `qwen2.5-vl:7b`
+- Full multimodal Ollama verification for `qwen2.5vl:7b`
 
 ## First Roadmap
 

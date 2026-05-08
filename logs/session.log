@@ -92,3 +92,4 @@
 [2026-05-08T14:01:08] Router: classified as chat | {"user_text": "hi"}
 [2026-05-08T14:01:08] Reasoner: dispatching mode chat
 [2026-05-08T14:01:08] Mode:chat: activated
+[2026-05-08T14:09:20] Reasoner: Ollama server is running. Active text model: qwen3:30b.

@@ -5,6 +5,6 @@
   },
   "models": {
     "main": "qwen3:30b",
-    "vision": "qwen2.5-vl:7b"
+    "vision": "qwen2.5vl:7b"
   }
 }

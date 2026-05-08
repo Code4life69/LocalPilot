@@ -22,8 +22,8 @@ def get_active_window_title() -> dict:
     try:
         import uiautomation as auto
 
-        window = auto.GetForegroundWindow()
-        return {"ok": True, "title": window.Name}
+        window = _get_foreground_control(auto)
+        return {"ok": True, "title": getattr(window, "Name", "")}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -32,7 +32,7 @@ def list_visible_controls(max_depth: int = 2) -> dict:
     try:
         import uiautomation as auto
 
-        window = auto.GetForegroundWindow()
+        window = _get_foreground_control(auto)
         controls: list[dict[str, Any]] = []
         for child, depth in _walk_controls(window, 0, max_depth):
             controls.append(
@@ -46,6 +46,14 @@ def list_visible_controls(max_depth: int = 2) -> dict:
         return {"ok": True, "controls": controls}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def _get_foreground_control(auto):
+    handle = auto.GetForegroundWindow()
+    control = auto.ControlFromHandle(handle)
+    if control is None:
+        raise RuntimeError(f"Could not resolve foreground window handle: {handle}")
+    return control
 
 
 def _walk_controls(control, depth: int, max_depth: int):
