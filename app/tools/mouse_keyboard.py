@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 def move_mouse(x: int, y: int) -> dict:
     try:
         import pyautogui
@@ -38,3 +39,13 @@ def hotkey(*keys: str) -> dict:
 
     pyautogui.hotkey(*keys)
     return {"ok": True, "keys": list(keys)}
+
+
+def press_key(key: str) -> dict:
+    try:
+        import pyautogui
+    except ImportError as exc:
+        return {"ok": False, "error": f"pyautogui not installed: {exc}"}
+
+    pyautogui.press(key)
+    return {"ok": True, "key": key}

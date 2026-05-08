@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.tools.desktop_flow import DesktopExecutionFlow
 from app.tools.mouse_keyboard import click, hotkey, move_mouse, type_text
 from app.tools.screen import get_active_window_basic, get_mouse_position, take_screenshot
 from app.tools.windows_ui import get_active_window_title, get_focused_control, list_visible_controls
@@ -10,10 +11,15 @@ from app.tools.windows_ui import get_active_window_title, get_focused_control, l
 class DesktopMode:
     def __init__(self, app) -> None:
         self.app = app
+        self.execution_flow = DesktopExecutionFlow(app)
 
     def handle(self, request: dict) -> dict:
         text = request["user_text"].strip()
         lowered = text.lower()
+
+        flow_result = self.execution_flow.execute(text) if self.execution_flow.can_handle(text) else None
+        if flow_result is not None:
+            return flow_result
 
         if "screenshot" in lowered:
             return take_screenshot(self.app.settings["screenshots_dir"])

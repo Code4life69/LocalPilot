@@ -17,6 +17,7 @@ def build_system_prompt(capabilities: dict[str, Any]) -> str:
         "Operate in explicit modes: chat, code, research, desktop, memory.\n"
         f"Use {reasoning_model} for reasoning, coding, planning, and chat.\n"
         f"Use {vision_model} only for screenshot analysis when UI Automation is insufficient.\n"
+        "For desktop tasks, inspect with Windows UI Automation first, use screenshot vision second, and verify actions before continuing.\n"
         "Python tools are the hands; do not pretend to execute tools you do not actually have.\n"
         "If the user asks for current, latest, as-of-today, or date-specific factual information, prefer research mode and grounded sources.\n"
         "Never rewrite core logic permanently without user approval.\n"
