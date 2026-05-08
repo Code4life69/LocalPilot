@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from app.modes.code_mode import CodeMode
+from app.modes.code_mode import APP_TEMPLATES, CodeMode
 
 
 class DummyLogger:
@@ -29,13 +29,13 @@ class DummyApp:
         return True
 
 
-def test_calculator_request_without_explicit_folder_creates_default_project(tmp_path):
+def test_notepad_request_without_explicit_folder_creates_default_project(tmp_path):
     app = DummyApp(tmp_path)
     mode = CodeMode(app)
 
     result = mode.handle(
         {
-            "user_text": "I want you to make me a new calculator program with a gui in a new folder and tell me where the folder is and make it a double click to start program so its easy to start for me"
+            "user_text": "make me a notepad app with a gui and double click starter"
         }
     )
 
@@ -43,16 +43,42 @@ def test_calculator_request_without_explicit_folder_creates_default_project(tmp_
     project_path = Path(result["project_path"])
     assert project_path.exists()
     assert project_path.parent == tmp_path / "workspace" / "generated_apps"
-    assert (project_path / "calculator.py").exists()
-    assert (project_path / "Run Calculator.bat").exists()
-    assert "Double-click Run Calculator.bat" in result["message"]
+    assert (project_path / "main.py").exists()
+    assert (project_path / "Run Notepad.bat").exists()
+    assert (project_path / "README.txt").exists()
+    assert result["verification"]["syntax_verified"] is True
+    assert "Double-click Run Notepad.bat" in result["message"]
 
 
-def test_calculator_scaffold_detector_is_not_triggered_by_generic_in_phrase(tmp_path):
+def test_generated_app_verification_uses_latest_matching_folder(tmp_path):
     app = DummyApp(tmp_path)
     mode = CodeMode(app)
 
-    assert not mode._is_calculator_scaffold_request("write a note in memory")
-    assert mode._is_calculator_scaffold_request(
-        "make a calculator with gui in a new folder and make it double click to start"
-    )
+    create_result = mode.handle({"user_text": "make me a timer app with a gui and double click starter"})
+    assert create_result["ok"]
+
+    verify_result = mode.handle({"user_text": "verify the generated timer app files and tell me how to run it"})
+    assert verify_result["ok"]
+    assert "Run Timer.bat" in verify_result["message"]
+    assert verify_result["verification"]["syntax_verified"] is True
+
+
+def test_supported_app_kind_detection():
+    mode = CodeMode(DummyApp(Path(".")))
+    assert mode._detect_supported_app_kind("make me a todo list app") == "todo"
+    assert mode._detect_supported_app_kind("make me a notepad app") == "notepad"
+    assert mode._detect_supported_app_kind("make me a timer app") == "timer"
+    assert mode._detect_supported_app_kind("make me a calculator app") == "calculator"
+
+
+def test_app_scaffold_request_requires_real_app_language():
+    mode = CodeMode(DummyApp(Path(".")))
+    assert not mode._is_app_scaffold_request("write a note in memory")
+    assert mode._is_app_scaffold_request("make me a calculator app with gui and double click starter")
+
+
+def test_all_templates_have_required_files():
+    for template in APP_TEMPLATES.values():
+        assert template["main_filename"] == "main.py"
+        assert template["launcher_name"].endswith(".bat")
+        assert template["readme_name"] == "README.txt"
