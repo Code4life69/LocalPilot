@@ -151,3 +151,17 @@
 [2026-05-08T14:39:10] Reasoner: dispatching mode desktop
 [2026-05-08T14:39:10] Mode:desktop: activated
 [2026-05-08T14:39:54] Reasoner: Ollama server is running. Active text model: qwen3:30b.
+[2026-05-08T14:39:56] Router: classified as memory | {"user_text": "show notes"}
+[2026-05-08T14:39:56] Reasoner: dispatching mode memory
+[2026-05-08T14:39:56] Mode:memory: activated
+[2026-05-08T14:39:56] Memory: Handling memory request: show notes
+[2026-05-08T14:39:56] Router: classified as memory | {"user_text": "search notes LocalPilot"}
+[2026-05-08T14:39:56] Reasoner: dispatching mode memory
+[2026-05-08T14:39:56] Mode:memory: activated
+[2026-05-08T14:39:56] Memory: Handling memory request: search notes LocalPilot
+[2026-05-08T14:39:56] Router: classified as desktop | {"user_text": "get mouse position"}
+[2026-05-08T14:39:56] Reasoner: dispatching mode desktop
+[2026-05-08T14:39:56] Mode:desktop: activated
+[2026-05-08T14:39:56] Router: classified as desktop | {"user_text": "take screenshot"}
+[2026-05-08T14:39:56] Reasoner: dispatching mode desktop
+[2026-05-08T14:39:56] Mode:desktop: activated
