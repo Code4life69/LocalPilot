@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 
 from app.tools import files as file_tools
@@ -88,13 +89,11 @@ class CodeMode:
         return (
             "calculator" in lowered
             and any(word in lowered for word in ("create", "build", "make"))
-            and "folder" in lowered or " in " in lowered or "c:\\" in lowered
+            and any(hint in lowered for hint in ("folder", " in ", "c:\\", "gui", "double click", "double-click"))
         )
 
     def _scaffold_calculator_project(self, text: str) -> dict:
-        target_dir = self._extract_target_directory(text)
-        if not target_dir:
-            return {"ok": False, "error": "Could not determine the target folder for the calculator project."}
+        target_dir = self._extract_target_directory(text) or self._default_calculator_project_dir()
 
         files_to_write = self._calculator_files(Path(target_dir))
         existing_targets = [path for path in files_to_write if Path(path).exists()]
@@ -113,7 +112,10 @@ class CodeMode:
 
         return {
             "ok": folder_result.get("ok", False) and all(item.get("ok", False) for item in write_results),
-            "message": f"Calculator project created in {target_dir}",
+            "message": (
+                f"Calculator project created in {target_dir}\n"
+                f"Double-click Run Calculator.bat in that folder to start it."
+            ),
             "project_path": target_dir,
             "files": list(files_to_write.keys()),
             "write_results": write_results,
@@ -132,6 +134,16 @@ class CodeMode:
             raw_path = raw_path.rstrip(". ")
             return raw_path
         return None
+
+    def _default_calculator_project_dir(self) -> str:
+        base_dir = self.app.root_dir / "workspace" / "generated_apps"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = base_dir / f"CalculatorApp_{timestamp}"
+        suffix = 1
+        while candidate.exists():
+            suffix += 1
+            candidate = base_dir / f"CalculatorApp_{timestamp}_{suffix}"
+        return str(candidate)
 
     def _calculator_files(self, target_dir: Path) -> dict[str, str]:
         calculator_py = """import tkinter as tk
