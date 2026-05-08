@@ -117,3 +117,10 @@
 {"timestamp": "2026-05-08T14:24:22", "role": "Mode:code", "message": "activated", "extra": {}}
 {"timestamp": "2026-05-08T14:24:22", "role": "Mode:code", "message": "Handling code request: Create a different calculator app in C:\\Projects\\CalculatorAppTwo. Use Python with a Tkinter GUI. Make it runnable by double clicking. Create the source file, a .bat launcher, and a README.", "extra": {}}
 {"timestamp": "2026-05-08T14:30:23", "role": "Reasoner", "message": "Ollama server is running. Active text model: qwen3:30b.", "extra": {}}
+{"timestamp": "2026-05-08T14:30:40", "role": "Router", "message": "classified as chat", "extra": {"user_text": "what can you do"}}
+{"timestamp": "2026-05-08T14:30:40", "role": "Reasoner", "message": "dispatching mode chat", "extra": {}}
+{"timestamp": "2026-05-08T14:30:40", "role": "Mode:chat", "message": "activated", "extra": {}}
+{"timestamp": "2026-05-08T14:32:18", "role": "Router", "message": "classified as memory", "extra": {"user_text": "show notes"}}
+{"timestamp": "2026-05-08T14:32:18", "role": "Reasoner", "message": "dispatching mode memory", "extra": {}}
+{"timestamp": "2026-05-08T14:32:18", "role": "Mode:memory", "message": "activated", "extra": {}}
+{"timestamp": "2026-05-08T14:32:18", "role": "Memory", "message": "Handling memory request: show notes", "extra": {}}
