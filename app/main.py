@@ -545,6 +545,10 @@ def format_result(result: dict[str, Any]) -> str:
         return str(result["message"])
     if "content" in result:
         return str(result["content"])
+    if result.get("ok") and "x" in result and "y" in result:
+        return f"Mouse position: ({result['x']}, {result['y']})"
+    if result.get("ok") and "path" in result and len(result) <= 3:
+        return str(result["path"])
     if "matches" in result:
         matches = result.get("matches") or []
         if not matches:

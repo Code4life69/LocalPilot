@@ -5,6 +5,9 @@
   "memory_dir": "memory",
   "workspace_dir": "workspace",
   "screenshots_dir": "workspace/screenshots",
+  "ui": {
+    "theme": "dark"
+  },
   "ollama": {
     "auto_start_server": true,
     "startup_wait_seconds": 8
