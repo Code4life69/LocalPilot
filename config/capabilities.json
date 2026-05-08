@@ -1,0 +1,66 @@
+{
+  "name": "LocalPilot",
+  "purpose": "A local Windows AI assistant with explicit modes, local memory, safe tool use, and optional GUI visibility.",
+  "modes": [
+    "chat",
+    "code",
+    "research",
+    "desktop",
+    "memory"
+  ],
+  "tools": {
+    "files": [
+      "list_folder",
+      "read_file",
+      "write_file",
+      "append_file",
+      "make_folder",
+      "copy_file",
+      "move_file"
+    ],
+    "shell": [
+      "run_command"
+    ],
+    "web": [
+      "search_web"
+    ],
+    "screen": [
+      "take_screenshot",
+      "get_mouse_position",
+      "get_active_window_basic"
+    ],
+    "desktop_input": [
+      "move_mouse",
+      "click",
+      "type_text",
+      "hotkey"
+    ],
+    "windows_ui": [
+      "get_focused_control",
+      "get_active_window_title",
+      "list_visible_controls"
+    ],
+    "vision": [
+      "analyze_screenshot"
+    ]
+  },
+  "safety_rules": [
+    "Never execute shell commands without approval.",
+    "Block dangerous shell commands by default.",
+    "Never overwrite files without approval.",
+    "Never click, type, or send hotkeys without approval.",
+    "Use Windows UI Automation before screenshot vision.",
+    "Do not permanently rewrite core logic without user approval."
+  ],
+  "known_limits": [
+    "Keyword routing is intentionally simple.",
+    "Vision support may require Ollama multimodal API tuning.",
+    "Desktop automation prefers inspection over direct manipulation."
+  ],
+  "todo": [
+    "Verify end-to-end qwen2.5-vl multimodal behavior with the installed Ollama build.",
+    "Improve natural-language parsing for tool intents.",
+    "Expand GUI controls without adding background autonomy."
+  ]
+}
+

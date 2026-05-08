@@ -1,0 +1,11 @@
+requests
+pyautogui
+mss
+opencv-python
+pillow
+pynput
+uiautomation
+beautifulsoup4
+duckduckgo-search
+pytest
+

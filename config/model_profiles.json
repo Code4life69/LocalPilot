@@ -1,0 +1,11 @@
+{
+  "ollama": {
+    "host": "http://127.0.0.1:11434",
+    "timeout_seconds": 90
+  },
+  "models": {
+    "main": "qwen2.5-coder:7b",
+    "vision": "qwen2.5-vl:7b"
+  }
+}
+

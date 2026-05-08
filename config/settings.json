@@ -1,0 +1,14 @@
+{
+  "app_name": "LocalPilot",
+  "enable_gui": true,
+  "logs_dir": "logs",
+  "memory_dir": "memory",
+  "workspace_dir": "workspace",
+  "screenshots_dir": "workspace/screenshots",
+  "approvals": {
+    "shell_requires_confirmation": true,
+    "desktop_requires_confirmation": true,
+    "overwrite_requires_confirmation": true
+  }
+}
+
