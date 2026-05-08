@@ -229,7 +229,6 @@ class LocalPilotGUI:
             bg=colors["bg"],
             sashwidth=8,
             bd=0,
-            highlightthickness=0,
         )
         body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
 
