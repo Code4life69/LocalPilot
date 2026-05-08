@@ -15,6 +15,7 @@ class KeywordRouter:
         "latest",
         "as of",
         "president",
+        "vice president",
         "ceo",
         "governor",
         "mayor",
@@ -22,6 +23,21 @@ class KeywordRouter:
         "price",
         "stock",
         "news",
+    ]
+
+    DESKTOP_ACTION_HINTS = [
+        "on my pc",
+        "on google",
+        "in the browser",
+        "use my mouse",
+        "use my keyboard",
+        "click through",
+        "download that image",
+        "download this image",
+        "look at the images",
+        "open google",
+        "open chrome",
+        "open browser",
     ]
 
     RESEARCH_QUESTION_WORDS = [
@@ -42,6 +58,8 @@ class KeywordRouter:
             return "memory"
         if self._looks_like_code_project_request(lowered):
             return "code"
+        if self._looks_like_desktop_task_request(lowered):
+            return "desktop"
         if self._looks_like_current_fact_request(lowered):
             return "research"
         for mode, keywords in self.ROUTE_KEYWORDS.items():
@@ -53,7 +71,12 @@ class KeywordRouter:
         return lowered.startswith(("show notes", "search notes", "save note", "remember", "save fact")) or lowered == "notes"
 
     def _looks_like_current_fact_request(self, lowered: str) -> bool:
-        starts_like_question = any(lowered.startswith(word + " ") for word in self.RESEARCH_QUESTION_WORDS)
+        normalized = lowered.strip()
+        for prefix in ("no ", "well ", "so ", "okay ", "ok "):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                break
+        starts_like_question = any(normalized.startswith(word + " ") for word in self.RESEARCH_QUESTION_WORDS)
         has_fact_hint = any(hint in lowered for hint in self.RESEARCH_FACT_HINTS)
         has_explicit_date = any(char.isdigit() for char in lowered) and any(sep in lowered for sep in ("/", "-"))
         return (starts_like_question and has_fact_hint) or has_explicit_date and has_fact_hint
@@ -63,3 +86,8 @@ class KeywordRouter:
         project_words = ("app", "program", "script", "calculator", "project")
         path_hint = ":\\" in lowered or " in c:\\" in lowered or "folder" in lowered
         return any(word in lowered for word in build_words) and any(word in lowered for word in project_words) and path_hint
+
+    def _looks_like_desktop_task_request(self, lowered: str) -> bool:
+        browser_or_pc_action = any(hint in lowered for hint in self.DESKTOP_ACTION_HINTS)
+        active_verb = any(word in lowered for word in ("open", "click", "type", "download", "search", "look at", "use"))
+        return browser_or_pc_action and active_verb

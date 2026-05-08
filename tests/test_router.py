@@ -9,3 +9,10 @@ def test_keyword_routing():
     assert router.classify("save note remember this") == "memory"
     assert router.classify("hello there") == "chat"
     assert router.classify("who is the current president as of 05/08/2026") == "research"
+    assert router.classify("no who is the vice president of america?") == "research"
+    assert (
+        router.classify(
+            "search for dolphins on my pc on google and look at the images and download that image"
+        )
+        == "desktop"
+    )

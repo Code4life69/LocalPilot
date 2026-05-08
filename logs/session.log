@@ -182,3 +182,4 @@
 [2026-05-08T14:50:50] Router: classified as research | {"user_text": "search for dolphins on my pc on google and look at the images and fine the coolest image and download that image and tell me where that file is"}
 [2026-05-08T14:50:50] Reasoner: dispatching mode research
 [2026-05-08T14:50:50] Mode:research: activated
+[2026-05-08T15:05:53] Reasoner: Ollama server is running. Active text model: qwen3:30b.
