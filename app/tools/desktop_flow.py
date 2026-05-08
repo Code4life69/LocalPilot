@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import re
 import time
 import webbrowser
@@ -24,6 +25,15 @@ class PlannedStep:
 
 
 class DesktopExecutionFlow:
+    RANDOM_TOPICS = [
+        "dolphins",
+        "mountains",
+        "city skyline",
+        "retro keyboards",
+        "space nebula",
+        "wolves",
+    ]
+
     def __init__(self, app) -> None:
         self.app = app
 
@@ -33,12 +43,13 @@ class DesktopExecutionFlow:
             re.search(r"https?://\S+", lowered)
             or "open google" in lowered
             or "open browser" in lowered
-            or ("search for" in lowered and ("google" in lowered or "browser" in lowered))
+            or self._looks_like_browser_search_request(lowered)
         )
 
     def execute(self, text: str) -> dict[str, Any] | None:
         plan = self._build_plan(text)
         if not plan:
+            self.app.logger.event("DesktopFlow", "unable to build plan for desktop request")
             return None
 
         summary = "\n".join(f"- {step.description}" for step in plan)
@@ -61,9 +72,16 @@ class DesktopExecutionFlow:
                     "steps": step_results,
                 }
 
+        content = self._format_summary(step_results, last_snapshot, success=True)
+        if self._needs_image_download_followup(text):
+            content += (
+                "\n\nNote: I opened and verified the Google Images search, but selecting, downloading, "
+                "and copying a chosen browser image into a folder is not implemented yet. No image file was saved."
+            )
+
         return {
             "ok": True,
-            "content": self._format_summary(step_results, last_snapshot, success=True),
+            "content": content,
             "steps": step_results,
         }
 
@@ -238,11 +256,37 @@ class DesktopExecutionFlow:
         return "\n".join(lines)
 
     def _extract_search_query(self, text: str) -> str:
-        match = re.search(r"search for (.+)", text, re.IGNORECASE)
-        if not match:
+        lowered = text.lower()
+        if "random thing" in lowered or "something random" in lowered:
+            return random.choice(self.RANDOM_TOPICS)
+
+        patterns = [
+            r"search for (.+)",
+            r"search (.+?) up on google",
+            r"search (.+?) on google",
+            r"search (.+?) in the browser",
+            r"search (.+)",
+        ]
+        query = ""
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                query = match.group(1).strip()
+                break
+        if not query:
             return ""
-        query = match.group(1).strip()
-        query = re.split(r"\s+(?:on google|in the browser|in browser|using my pc|on my pc)\b", query, maxsplit=1, flags=re.IGNORECASE)[0]
+        query = re.split(
+            r"\s+(?:then|and)\s+(?:go to images|open images|save|download|copy|tell me)\b",
+            query,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
+        query = re.split(
+            r"\s+(?:up )?on google\b|\s+in the browser\b|\s+in browser\b|\s+using my pc\b|\s+on my pc\b",
+            query,
+            maxsplit=1,
+            flags=re.IGNORECASE,
+        )[0]
         query = query.rstrip(" .")
         return query
 
@@ -258,3 +302,17 @@ class DesktopExecutionFlow:
     def _title_terms_for_url(self, url: str) -> list[str]:
         terms = self._split_terms(url)
         return terms[:3] or ["browser"]
+
+    def _looks_like_browser_search_request(self, lowered: str) -> bool:
+        return (
+            "google" in lowered
+            and any(word in lowered for word in ("search", "images", "image"))
+        ) or ("browser" in lowered and "search" in lowered)
+
+    def _needs_image_download_followup(self, text: str) -> bool:
+        lowered = text.lower()
+        return (
+            any(word in lowered for word in ("save", "download", "copy"))
+            and "image" in lowered
+            and "folder" in lowered
+        )
