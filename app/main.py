@@ -157,6 +157,17 @@ class LocalPilotApp:
         self._shutdown_complete = True
         self._run_git_sync("shutdown")
 
+    def run_guarded_desktop_action(self, action_name: str, action):
+        self.logger.event("DesktopGuard", f"starting {action_name}")
+        if self.gui is not None:
+            self.gui.show_desktop_busy_overlay(action_name)
+        try:
+            return action()
+        finally:
+            if self.gui is not None:
+                self.gui.hide_desktop_busy_overlay()
+            self.logger.event("DesktopGuard", f"finished {action_name}")
+
 
 class LocalPilotGUI:
     def __init__(self, app: LocalPilotApp) -> None:
@@ -165,6 +176,7 @@ class LocalPilotGUI:
         self.root.title("LocalPilot")
         self.root.geometry("1100x720")
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
+        self.desktop_overlay: tk.Toplevel | None = None
         self._build_widgets()
         self.root.after(150, self._drain_events)
 
@@ -262,6 +274,90 @@ class LocalPilotGUI:
         widget.insert(tk.END, text)
         widget.see(tk.END)
         widget.configure(state="disabled")
+
+    def show_desktop_busy_overlay(self, action_name: str) -> None:
+        settings = self.app.settings.get("desktop_guard", {})
+        if not settings.get("show_overlay", True):
+            return
+
+        def build_overlay() -> None:
+            if self.desktop_overlay is not None and self.desktop_overlay.winfo_exists():
+                return
+
+            overlay = tk.Toplevel(self.root)
+            overlay.title(settings.get("title", "LocalPilot Is Using Your PC"))
+            overlay.attributes("-topmost", True)
+            overlay.geometry("560x220+480+220")
+            overlay.configure(bg="#101820")
+            overlay.resizable(False, False)
+            overlay.protocol("WM_DELETE_WINDOW", lambda: None)
+            overlay.transient(self.root)
+            try:
+                overlay.grab_set()
+            except Exception:
+                pass
+
+            title = tk.Label(
+                overlay,
+                text=settings.get("title", "LocalPilot Is Using Your PC"),
+                font=("Segoe UI", 18, "bold"),
+                fg="#f4f6f8",
+                bg="#101820",
+            )
+            title.pack(pady=(24, 12))
+
+            body = tk.Label(
+                overlay,
+                text=settings.get(
+                    "message",
+                    "Please do not touch your mouse or keyboard until this action is finished.",
+                ),
+                font=("Segoe UI", 12),
+                fg="#f4f6f8",
+                bg="#101820",
+                wraplength=500,
+                justify="center",
+            )
+            body.pack(padx=24)
+
+            action = tk.Label(
+                overlay,
+                text=f"Current action: {action_name}",
+                font=("Segoe UI", 11, "bold"),
+                fg="#86d0ff",
+                bg="#101820",
+            )
+            action.pack(pady=(14, 8))
+
+            footer = tk.Label(
+                overlay,
+                text=settings.get(
+                    "footer",
+                    "LocalPilot will remove this notice as soon as it is safe again.",
+                ),
+                font=("Segoe UI", 10),
+                fg="#b8c4cc",
+                bg="#101820",
+                wraplength=500,
+                justify="center",
+            )
+            footer.pack(padx=24, pady=(0, 18))
+
+            self.desktop_overlay = overlay
+
+        self.root.after(0, build_overlay)
+
+    def hide_desktop_busy_overlay(self) -> None:
+        def destroy_overlay() -> None:
+            if self.desktop_overlay is not None and self.desktop_overlay.winfo_exists():
+                try:
+                    self.desktop_overlay.grab_release()
+                except Exception:
+                    pass
+                self.desktop_overlay.destroy()
+            self.desktop_overlay = None
+
+        self.root.after(0, destroy_overlay)
 
 
 def format_result(result: dict[str, Any]) -> str:

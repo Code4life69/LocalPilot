@@ -42,21 +42,30 @@ class DesktopMode:
                 return {"ok": False, "error": "Provide x and y coordinates."}
             if not self.app.ask_approval(f"Move mouse to {coords[0]}, {coords[1]}?"):
                 return {"ok": False, "error": "Mouse move cancelled by user."}
-            return move_mouse(*coords)
+            return self.app.run_guarded_desktop_action(
+                f"move mouse to {coords[0]}, {coords[1]}",
+                lambda: move_mouse(*coords),
+            )
 
         if lowered.startswith("click"):
             coords = self._extract_coords(text)
             if not self.app.ask_approval(f"Approve click action? {coords if coords else 'current cursor position'}"):
                 return {"ok": False, "error": "Click cancelled by user."}
             if coords:
-                return click(*coords)
-            return click()
+                return self.app.run_guarded_desktop_action(
+                    f"click at {coords[0]}, {coords[1]}",
+                    lambda: click(*coords),
+                )
+            return self.app.run_guarded_desktop_action("click current cursor position", click)
 
         if lowered.startswith("type "):
             payload = text[5:]
             if not self.app.ask_approval(f"Approve typing this text?\n{payload}"):
                 return {"ok": False, "error": "Typing cancelled by user."}
-            return type_text(payload)
+            return self.app.run_guarded_desktop_action(
+                "type text",
+                lambda: type_text(payload),
+            )
 
         if lowered.startswith("hotkey"):
             keys = [part.strip() for part in re.split(r"[+, ]+", text[6:].strip()) if part.strip()]
@@ -64,7 +73,10 @@ class DesktopMode:
                 return {"ok": False, "error": "No hotkey keys provided."}
             if not self.app.ask_approval(f"Approve hotkey: {' + '.join(keys)}?"):
                 return {"ok": False, "error": "Hotkey cancelled by user."}
-            return hotkey(*keys)
+            return self.app.run_guarded_desktop_action(
+                f"hotkey {' + '.join(keys)}",
+                lambda: hotkey(*keys),
+            )
 
         if "analyze screenshot" in lowered:
             screenshot = take_screenshot(self.app.settings["screenshots_dir"])
@@ -87,4 +99,3 @@ class DesktopMode:
         if not match:
             return None
         return int(match.group(1)), int(match.group(2))
-

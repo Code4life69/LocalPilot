@@ -15,6 +15,12 @@
     "push_on_shutdown": true,
     "commit_message_prefix": "LocalPilot autosync"
   },
+  "desktop_guard": {
+    "show_overlay": true,
+    "title": "LocalPilot Is Using Your PC",
+    "message": "Please do not touch your mouse or keyboard until this action is finished.",
+    "footer": "LocalPilot will remove this notice as soon as it is safe again."
+  },
   "approvals": {
     "shell_requires_confirmation": true,
     "desktop_requires_confirmation": true,
