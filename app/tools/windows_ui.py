@@ -13,6 +13,7 @@ def get_focused_control() -> dict:
             "name": getattr(control, "Name", ""),
             "control_type": getattr(control, "ControlTypeName", ""),
             "automation_id": getattr(control, "AutomationId", ""),
+            "bounds": _extract_bounds(control),
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -23,7 +24,13 @@ def get_active_window_title() -> dict:
         import uiautomation as auto
 
         window = _get_foreground_control(auto)
-        return {"ok": True, "title": getattr(window, "Name", "")}
+        return {
+            "ok": True,
+            "title": getattr(window, "Name", ""),
+            "control_type": getattr(window, "ControlTypeName", ""),
+            "automation_id": getattr(window, "AutomationId", ""),
+            "bounds": _extract_bounds(window),
+        }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -41,6 +48,7 @@ def list_visible_controls(max_depth: int = 2) -> dict:
                     "name": getattr(child, "Name", ""),
                     "control_type": getattr(child, "ControlTypeName", ""),
                     "automation_id": getattr(child, "AutomationId", ""),
+                    "bounds": _extract_bounds(child),
                 }
             )
         return {"ok": True, "controls": controls}
@@ -62,3 +70,19 @@ def _walk_controls(control, depth: int, max_depth: int):
     for child in control.GetChildren():
         yield child, depth
         yield from _walk_controls(child, depth + 1, max_depth)
+
+
+def _extract_bounds(control) -> dict[str, int] | None:
+    try:
+        rect = getattr(control, "BoundingRectangle", None)
+        if rect is None:
+            return None
+        left = int(getattr(rect, "left", getattr(rect, "Left", 0)))
+        top = int(getattr(rect, "top", getattr(rect, "Top", 0)))
+        right = int(getattr(rect, "right", getattr(rect, "Right", 0)))
+        bottom = int(getattr(rect, "bottom", getattr(rect, "Bottom", 0)))
+        if right <= left or bottom <= top:
+            return None
+        return {"left": left, "top": top, "right": right, "bottom": bottom}
+    except Exception:
+        return None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from app.tools.desktop_debug import visualize_desktop_understanding
 from app.tools.desktop_flow import DesktopExecutionFlow
 from app.tools.mouse_keyboard import click, hotkey, move_mouse, type_text
 from app.tools.screen import get_active_window_basic, get_mouse_position, take_screenshot
@@ -20,6 +21,10 @@ class DesktopMode:
         flow_result = self.execution_flow.execute(text) if self.execution_flow.can_handle(text) else None
         if flow_result is not None:
             return flow_result
+
+        if lowered in {"visualize desktop", "visualize desktop understanding", "show me what you see"}:
+            debug_dir = str(self.app.root_dir / "workspace" / "debug_views")
+            return visualize_desktop_understanding(self.app.settings["screenshots_dir"], debug_dir)
 
         if "screenshot" in lowered:
             return take_screenshot(self.app.settings["screenshots_dir"])

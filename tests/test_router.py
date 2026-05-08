@@ -16,3 +16,6 @@ def test_keyword_routing():
         )
         == "desktop"
     )
+    assert router.classify("visualize desktop") == "desktop"
+    assert router.classify("visualize desktop understanding") == "desktop"
+    assert router.classify("show me what you see") == "desktop"

@@ -38,6 +38,9 @@ class KeywordRouter:
         "open google",
         "open chrome",
         "open browser",
+        "visualize desktop",
+        "desktop understanding",
+        "what you see",
     ]
 
     RESEARCH_QUESTION_WORDS = [
@@ -88,6 +91,8 @@ class KeywordRouter:
         return any(word in lowered for word in build_words) and any(word in lowered for word in project_words) and path_hint
 
     def _looks_like_desktop_task_request(self, lowered: str) -> bool:
+        if lowered in {"visualize desktop", "visualize desktop understanding", "show me what you see"}:
+            return True
         browser_or_pc_action = any(hint in lowered for hint in self.DESKTOP_ACTION_HINTS)
         active_verb = any(word in lowered for word in ("open", "click", "type", "download", "search", "look at", "use"))
         return browser_or_pc_action and active_verb
