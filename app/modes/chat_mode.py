@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 
 class ChatMode:
     def __init__(self, app) -> None:
@@ -22,6 +24,16 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_capabilities(),
             }
+        if lowered == "trust checklist":
+            return {
+                "ok": True,
+                "message": self._load_trust_checklist(),
+            }
         response = self.app.ollama.chat(self.app.system_prompt, text)
         return {"ok": True, "message": response}
 
+    def _load_trust_checklist(self) -> str:
+        path = Path(self.app.root_dir) / "docs" / "TRUST_GAUNTLET.md"
+        if not path.exists():
+            return "Trust checklist is missing. Expected docs/TRUST_GAUNTLET.md."
+        return path.read_text(encoding="utf-8")
