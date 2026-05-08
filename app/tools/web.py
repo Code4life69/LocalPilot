@@ -29,12 +29,16 @@ def _search_with_ddgs(query: str, max_results: int) -> list[dict]:
         raise RuntimeError(f"duckduckgo-search not installed: {exc}") from exc
 
     results = []
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message=r"This package \(`duckduckgo_search`\) has been renamed to `ddgs`!",
-            category=RuntimeWarning,
-        )
+    original_warn = warnings.warn
+
+    def _filtered_warn(message, category=None, *args, **kwargs):
+        text = str(message)
+        if category is RuntimeWarning and "has been renamed to `ddgs`" in text:
+            return
+        return original_warn(message, category=category, *args, **kwargs)
+
+    warnings.warn = _filtered_warn
+    try:
         with DDGS() as ddgs:
             for item in ddgs.text(query, max_results=max_results):
                 results.append(
@@ -46,6 +50,8 @@ def _search_with_ddgs(query: str, max_results: int) -> list[dict]:
                 )
                 if len(results) >= max_results:
                     break
+    finally:
+        warnings.warn = original_warn
     return results
 
 
