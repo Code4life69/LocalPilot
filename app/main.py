@@ -7,7 +7,7 @@ import threading
 import tkinter as tk
 import atexit
 from pathlib import Path
-from tkinter import messagebox, scrolledtext
+from tkinter import messagebox, scrolledtext, ttk
 from typing import Any
 
 from app.git_sync import GitSyncManager
@@ -174,52 +174,134 @@ class LocalPilotGUI:
         self.app = app
         self.root = tk.Tk()
         self.root.title("LocalPilot")
-        self.root.geometry("1100x720")
+        self.root.geometry("1240x820")
+        self.root.minsize(1100, 760)
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.desktop_overlay: tk.Toplevel | None = None
+        self.memory_text: scrolledtext.ScrolledText | None = None
         self._build_widgets()
+        self._refresh_status_bar()
         self.root.after(150, self._drain_events)
 
     def _build_widgets(self) -> None:
-        header = tk.Frame(self.root)
-        header.pack(fill="x", padx=8, pady=8)
+        theme = self.app.settings.get("ui", {}).get("theme", "dark")
+        colors = self._theme_colors(theme)
+        self.colors = colors
+        self.root.configure(bg=colors["bg"])
+        self.style = ttk.Style()
+        self.style.theme_use("clam")
+        self.style.configure("Status.TFrame", background=colors["panel"])
+        self.style.configure("StatusLabel.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10))
+        self.style.configure("StatusValue.TLabel", background=colors["panel"], foreground=colors["accent"], font=("Segoe UI", 10, "bold"))
+        self.style.configure("Tabs.TNotebook", background=colors["bg"], borderwidth=0)
+        self.style.configure("Tabs.TNotebook.Tab", font=("Segoe UI", 10), padding=(14, 8), background=colors["panel"], foreground=colors["muted"])
+        self.style.map("Tabs.TNotebook.Tab", background=[("selected", colors["surface"])], foreground=[("selected", colors["text"])])
+        self.style.configure("Action.TButton", font=("Segoe UI", 10), padding=(10, 8))
 
-        self.mode_var = tk.StringVar(value="Mode: idle")
-        self.role_var = tk.StringVar(value="Role: idle")
-        tk.Label(header, textvariable=self.mode_var, font=("Segoe UI", 11, "bold")).pack(side="left", padx=8)
-        tk.Label(header, textvariable=self.role_var, font=("Segoe UI", 11, "bold")).pack(side="left", padx=8)
+        header = ttk.Frame(self.root, style="Status.TFrame", padding=(14, 12))
+        header.pack(fill="x", padx=14, pady=(14, 10))
 
-        body = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashrelief=tk.RAISED)
-        body.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.mode_var = tk.StringVar(value="idle")
+        self.role_var = tk.StringVar(value="idle")
+        self.ollama_var = tk.StringVar(value="unknown")
+        self.main_model_var = tk.StringVar(value="n/a")
+        self.vision_model_var = tk.StringVar(value="n/a")
+        self.safety_var = tk.StringVar(value="Guarded")
 
-        left = tk.Frame(body)
-        right = tk.Frame(body)
-        body.add(left, stretch="always")
-        body.add(right)
+        status_items = [
+            ("Mode", self.mode_var),
+            ("Role", self.role_var),
+            ("Ollama", self.ollama_var),
+            ("Main", self.main_model_var),
+            ("Vision", self.vision_model_var),
+            ("Safety", self.safety_var),
+        ]
+        for index, (label, variable) in enumerate(status_items):
+            item = ttk.Frame(header, style="Status.TFrame")
+            item.grid(row=0, column=index, sticky="w", padx=(0, 18))
+            ttk.Label(item, text=f"{label}:", style="StatusLabel.TLabel").pack(side="left")
+            ttk.Label(item, textvariable=variable, style="StatusValue.TLabel").pack(side="left", padx=(6, 0))
 
-        tk.Label(left, text="Conversation / Output", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.output = scrolledtext.ScrolledText(left, wrap=tk.WORD, height=25)
+        body = tk.PanedWindow(
+            self.root,
+            orient=tk.HORIZONTAL,
+            sashrelief=tk.RAISED,
+            bg=colors["bg"],
+            sashwidth=8,
+            bd=0,
+            highlightthickness=0,
+        )
+        body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+
+        left = tk.Frame(body, bg=colors["bg"])
+        right = tk.Frame(body, bg=colors["bg"])
+        body.add(left, stretch="always", minsize=720)
+        body.add(right, minsize=360)
+
+        tk.Label(
+            left,
+            text="Conversation",
+            font=("Segoe UI", 11, "bold"),
+            bg=colors["bg"],
+            fg=colors["text"],
+        ).pack(anchor="w", pady=(0, 8))
+        self.output = scrolledtext.ScrolledText(
+            left,
+            wrap=tk.WORD,
+            height=25,
+            font=("Segoe UI", 11),
+            bg=colors["surface"],
+            fg=colors["text"],
+            insertbackground=colors["text"],
+            relief="flat",
+            bd=0,
+            padx=14,
+            pady=14,
+            spacing1=6,
+            spacing3=10,
+        )
         self.output.pack(fill="both", expand=True)
         self.output.configure(state="disabled")
+        self.output.tag_configure("user", font=("Segoe UI", 11, "bold"), foreground=colors["accent"])
+        self.output.tag_configure("assistant", font=("Segoe UI", 11, "bold"), foreground=colors["success"])
+        self.output.tag_configure("body", font=("Segoe UI", 11), foreground=colors["text"])
+        self.output.tag_configure("error", font=("Segoe UI", 11), foreground=colors["danger"])
 
-        input_frame = tk.Frame(left)
-        input_frame.pack(fill="x", pady=(8, 0))
-        self.input_entry = tk.Entry(input_frame)
+        input_frame = tk.Frame(left, bg=colors["bg"])
+        input_frame.pack(fill="x", pady=(12, 0))
+        self.input_entry = tk.Entry(
+            input_frame,
+            font=("Segoe UI", 11),
+            bg=colors["surface"],
+            fg=colors["text"],
+            insertbackground=colors["text"],
+            relief="flat",
+            bd=0,
+        )
         self.input_entry.pack(side="left", fill="x", expand=True)
         self.input_entry.bind("<Return>", lambda _event: self.submit_input())
-        tk.Button(input_frame, text="Send", command=self.submit_input).pack(side="left", padx=(8, 0))
+        send_button = ttk.Button(input_frame, text="Send", command=self.submit_input, style="Action.TButton")
+        send_button.pack(side="left", padx=(10, 0))
 
-        tk.Label(right, text="Activity Timeline", font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        self.timeline = scrolledtext.ScrolledText(right, wrap=tk.WORD, width=45, height=20)
-        self.timeline.pack(fill="both", expand=True)
-        self.timeline.configure(state="disabled")
+        notebook = ttk.Notebook(right, style="Tabs.TNotebook")
+        notebook.pack(fill="both", expand=True)
 
-        tk.Label(right, text="Recent Logs", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8, 0))
-        self.logs = scrolledtext.ScrolledText(right, wrap=tk.WORD, width=45, height=12)
-        self.logs.pack(fill="both", expand=True)
-        self.logs.configure(state="disabled")
+        activity_tab = tk.Frame(notebook, bg=colors["bg"])
+        logs_tab = tk.Frame(notebook, bg=colors["bg"])
+        memory_tab = tk.Frame(notebook, bg=colors["bg"])
+        tools_tab = tk.Frame(notebook, bg=colors["bg"])
+        notebook.add(activity_tab, text="Activity")
+        notebook.add(logs_tab, text="Logs")
+        notebook.add(memory_tab, text="Memory")
+        notebook.add(tools_tab, text="Tools")
 
-        for widget in (self.output, self.timeline, self.logs):
+        self.timeline = self._make_panel_text(activity_tab, height=28)
+        self.logs = self._make_panel_text(logs_tab, height=28)
+        self.memory_text = self._make_panel_text(memory_tab, height=28)
+        self._load_memory_panel()
+        self._build_tools_tab(tools_tab)
+
+        for widget in (self.output, self.timeline, self.logs, self.memory_text):
             widget.bind("<Key>", lambda _event: "break")
             widget.bind("<<Paste>>", lambda _event: "break")
             widget.bind("<Button-3>", lambda _event: "break")
@@ -229,9 +311,19 @@ class LocalPilotGUI:
         if not text:
             return
         self.input_entry.delete(0, tk.END)
-        self._append_readonly(self.output, f"\nYou: {text}\n")
+        self.submit_text(text)
+
+    def submit_text(self, text: str) -> None:
+        self._append_chat_message("You", text, speaker_tag="user")
         request = self.app.process_user_input(text)
-        self._append_readonly(self.output, f"LocalPilot: {format_result(request['result'])}\n")
+        rendered = format_result(request["result"])
+        speaker_tag = "assistant"
+        body_tag = "body"
+        if isinstance(request["result"], dict) and request["result"].get("error"):
+            body_tag = "error"
+        self._append_chat_message("LocalPilot", rendered, speaker_tag=speaker_tag, body_tag=body_tag)
+        self._refresh_status_bar()
+        self._maybe_refresh_memory(request["result"])
 
     def on_event(self, event: dict[str, Any]) -> None:
         self.event_queue.put(event)
@@ -241,12 +333,13 @@ class LocalPilotGUI:
             event = self.event_queue.get()
             role = event["role"]
             message = event["message"]
-            self.role_var.set(f"Role: {role}")
+            self.role_var.set(role)
             if role.startswith("Mode:"):
-                self.mode_var.set(role.replace("Mode:", "Mode: "))
+                self.mode_var.set(role.replace("Mode:", "").strip())
             line = f"[{event['timestamp']}] {role} -> {message}\n"
             self._append_readonly(self.timeline, line)
             self._append_readonly(self.logs, line)
+            self._refresh_status_bar()
         self.root.after(150, self._drain_events)
 
     def request_approval(self, prompt: str) -> bool:
@@ -274,6 +367,93 @@ class LocalPilotGUI:
         widget.insert(tk.END, text)
         widget.see(tk.END)
         widget.configure(state="disabled")
+
+    def _append_chat_message(self, speaker: str, text: str, speaker_tag: str, body_tag: str = "body") -> None:
+        widget = self.output
+        widget.configure(state="normal")
+        widget.insert(tk.END, f"{speaker}\n", (speaker_tag,))
+        widget.insert(tk.END, f"{text}\n\n", (body_tag,))
+        widget.see(tk.END)
+        widget.configure(state="disabled")
+
+    def _make_panel_text(self, parent: tk.Frame, height: int) -> scrolledtext.ScrolledText:
+        text = scrolledtext.ScrolledText(
+            parent,
+            wrap=tk.WORD,
+            height=height,
+            font=("Segoe UI", 10),
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=12,
+        )
+        text.pack(fill="both", expand=True, padx=2, pady=2)
+        text.configure(state="disabled")
+        return text
+
+    def _build_tools_tab(self, parent: tk.Frame) -> None:
+        container = tk.Frame(parent, bg=self.colors["bg"])
+        container.pack(fill="both", expand=True, padx=8, pady=8)
+
+        actions = [
+            ("Show Notes", lambda: self.submit_text("show notes")),
+            ("Take Screenshot", lambda: self.submit_text("take screenshot")),
+            ("Mouse Position", lambda: self.submit_text("get mouse position")),
+            ("Clear Chat", self.clear_chat),
+        ]
+        for label, command in actions:
+            button = ttk.Button(container, text=label, command=command, style="Action.TButton")
+            button.pack(fill="x", pady=6)
+
+    def clear_chat(self) -> None:
+        self.output.configure(state="normal")
+        self.output.delete("1.0", tk.END)
+        self.output.configure(state="disabled")
+
+    def _refresh_status_bar(self) -> None:
+        self.ollama_var.set(self.app.ollama.last_status.replace("_", " "))
+        self.main_model_var.set(self.app.ollama.active_main_model or self.app.model_profiles["models"]["main"])
+        self.vision_model_var.set(self.app.ollama.active_vision_model or self.app.model_profiles["models"]["vision"])
+        self.safety_var.set("Guarded")
+
+    def _load_memory_panel(self) -> None:
+        if self.memory_text is None:
+            return
+        content = self.app.memory.show_notes()
+        self.memory_text.configure(state="normal")
+        self.memory_text.delete("1.0", tk.END)
+        self.memory_text.insert(tk.END, content)
+        self.memory_text.configure(state="disabled")
+
+    def _maybe_refresh_memory(self, result: dict[str, Any]) -> None:
+        if any(key in result for key in ("content", "matches", "message")):
+            self._load_memory_panel()
+
+    def _theme_colors(self, theme: str) -> dict[str, str]:
+        if theme == "light":
+            return {
+                "bg": "#edf1f5",
+                "panel": "#dce5ef",
+                "surface": "#ffffff",
+                "text": "#16212e",
+                "muted": "#5b6774",
+                "accent": "#185ea8",
+                "success": "#18794e",
+                "danger": "#b42318",
+            }
+        return {
+            "bg": "#0f141b",
+            "panel": "#18202a",
+            "surface": "#1f2935",
+            "text": "#f3f6fb",
+            "muted": "#a2afbf",
+            "accent": "#61b0ff",
+            "success": "#6fd3a5",
+            "danger": "#ff8f8f",
+        }
 
     def show_desktop_busy_overlay(self, action_name: str) -> None:
         settings = self.app.settings.get("desktop_guard", {})
@@ -363,6 +543,13 @@ class LocalPilotGUI:
 def format_result(result: dict[str, Any]) -> str:
     if "message" in result:
         return str(result["message"])
+    if "content" in result:
+        return str(result["content"])
+    if "matches" in result:
+        matches = result.get("matches") or []
+        if not matches:
+            return "No matching notes found."
+        return "\n".join(f"- {match}" for match in matches)
     if result.get("results"):
         lines = [f"Research results for: {result.get('query', '')}"]
         for item in result["results"]:
@@ -371,6 +558,8 @@ def format_result(result: dict[str, Any]) -> str:
             if item.get("snippet"):
                 lines.append(f"  {item['snippet']}")
         return "\n".join(lines)
+    if "error" in result:
+        return f"Error: {result['error']}"
     return json.dumps(result, indent=2)
 
 

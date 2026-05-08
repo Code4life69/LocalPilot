@@ -38,6 +38,8 @@ class KeywordRouter:
 
     def classify(self, text: str) -> str:
         lowered = text.lower()
+        if self._looks_like_memory_request(lowered):
+            return "memory"
         if self._looks_like_code_project_request(lowered):
             return "code"
         if self._looks_like_current_fact_request(lowered):
@@ -46,6 +48,9 @@ class KeywordRouter:
             if any(keyword in lowered for keyword in keywords):
                 return mode
         return "chat"
+
+    def _looks_like_memory_request(self, lowered: str) -> bool:
+        return lowered.startswith(("show notes", "search notes", "save note", "remember", "save fact")) or lowered == "notes"
 
     def _looks_like_current_fact_request(self, lowered: str) -> bool:
         starts_like_question = any(lowered.startswith(word + " ") for word in self.RESEARCH_QUESTION_WORDS)
