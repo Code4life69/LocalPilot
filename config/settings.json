@@ -5,10 +5,19 @@
   "memory_dir": "memory",
   "workspace_dir": "workspace",
   "screenshots_dir": "workspace/screenshots",
+  "ollama": {
+    "auto_start_server": true,
+    "startup_wait_seconds": 8
+  },
+  "git_sync": {
+    "enabled": true,
+    "push_on_startup": true,
+    "push_on_shutdown": true,
+    "commit_message_prefix": "LocalPilot autosync"
+  },
   "approvals": {
     "shell_requires_confirmation": true,
     "desktop_requires_confirmation": true,
     "overwrite_requires_confirmation": true
   }
 }
-

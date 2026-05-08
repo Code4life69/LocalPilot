@@ -1,0 +1,56 @@
+[2026-05-08T13:05:31] Router: classified as chat | {"user_text": "help"}
+[2026-05-08T13:05:31] Reasoner: dispatching mode chat
+[2026-05-08T13:05:31] Mode:chat: activated
+[2026-05-08T13:07:36] Router: classified as chat | {"user_text": "Hi"}
+[2026-05-08T13:07:36] Reasoner: dispatching mode chat
+[2026-05-08T13:07:36] Mode:chat: activated
+[2026-05-08T13:08:55] Reasoner: Ollama server started automatically.
+[2026-05-08T13:08:55] Router: classified as chat | {"user_text": "Hi"}
+[2026-05-08T13:08:55] Reasoner: dispatching mode chat
+[2026-05-08T13:08:55] Mode:chat: activated
+[2026-05-08T13:09:43] Reasoner: Ollama server is running. Active text model: qwen3:8b. Preferred model `qwen2.5-coder:7b` is not installed; using fallback `qwen3:8b`. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:09:43] Router: classified as chat | {"user_text": "Hi"}
+[2026-05-08T13:09:43] Reasoner: dispatching mode chat
+[2026-05-08T13:09:43] Mode:chat: activated
+[2026-05-08T13:10:19] Reasoner: Ollama server is running. Active text model: qwen3:8b. Preferred model `qwen2.5-coder:7b` is not installed; using fallback `qwen3:8b`. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:10:19] Router: classified as chat | {"user_text": "Hi"}
+[2026-05-08T13:10:19] Reasoner: dispatching mode chat
+[2026-05-08T13:10:19] Mode:chat: activated
+[2026-05-08T13:26:47] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:28:25] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:28:38] Router: classified as chat | {"user_text": "Hi"}
+[2026-05-08T13:28:38] Reasoner: dispatching mode chat
+[2026-05-08T13:28:38] Mode:chat: activated
+[2026-05-08T13:29:47] Router: classified as chat | {"user_text": "can you figure out who is the current president of 05/08/2026"}
+[2026-05-08T13:29:47] Reasoner: dispatching mode chat
+[2026-05-08T13:29:47] Mode:chat: activated
+[2026-05-08T13:31:55] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:31:55] Router: classified as research | {"user_text": "can you figure out who is the current president of 05/08/2026"}
+[2026-05-08T13:31:55] Reasoner: dispatching mode research
+[2026-05-08T13:31:55] Mode:research: activated
+[2026-05-08T13:33:13] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:33:14] Router: classified as research | {"user_text": "can you figure out who is the current president of 05/08/2026"}
+[2026-05-08T13:33:14] Reasoner: dispatching mode research
+[2026-05-08T13:33:14] Mode:research: activated
+[2026-05-08T13:33:46] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:33:46] Router: classified as research | {"user_text": "can you figure out who is the current president of 05/08/2026"}
+[2026-05-08T13:33:46] Reasoner: dispatching mode research
+[2026-05-08T13:33:46] Mode:research: activated
+[2026-05-08T13:34:45] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:34:45] Router: classified as research | {"user_text": "can you figure out who is the current president of 05/08/2026"}
+[2026-05-08T13:34:45] Reasoner: dispatching mode research
+[2026-05-08T13:34:45] Mode:research: activated
+[2026-05-08T13:35:14] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.
+[2026-05-08T13:35:24] Router: classified as chat | {"user_text": "hi"}
+[2026-05-08T13:35:24] Reasoner: dispatching mode chat
+[2026-05-08T13:35:24] Mode:chat: activated
+[2026-05-08T13:36:21] Router: classified as research | {"user_text": "can you figure out who is the current president of 05/08/2026"}
+[2026-05-08T13:36:21] Reasoner: dispatching mode research
+[2026-05-08T13:36:21] Mode:research: activated
+[2026-05-08T13:36:50] Router: classified as research | {"user_text": "who is the vice president then?"}
+[2026-05-08T13:36:50] Reasoner: dispatching mode research
+[2026-05-08T13:36:50] Mode:research: activated
+[2026-05-08T13:37:32] Router: classified as chat | {"user_text": "no who is the vice president of america?"}
+[2026-05-08T13:37:32] Reasoner: dispatching mode chat
+[2026-05-08T13:37:32] Mode:chat: activated
+[2026-05-08T13:44:08] Reasoner: Ollama server is running. Active text model: qwen3:30b. Vision model `qwen2.5-vl:7b` is not installed yet.

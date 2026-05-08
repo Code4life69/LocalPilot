@@ -24,15 +24,20 @@ cd C:\LocalPilot
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3:30b
 ollama pull qwen2.5-vl:7b
 python localpilot.py
 ```
 
 ## Required Ollama Models
 
-- Main / coding model: `qwen2.5-coder:7b`
+- Main reasoning / chat model: `qwen3:30b`
 - Vision model: `qwen2.5-vl:7b`
+
+LocalPilot keeps reasoning/chat and visual analysis separate by default:
+
+- `qwen3:30b` handles planning, coding, chat, and tool decisions
+- `qwen2.5-vl:7b` is reserved for screenshots and visual inspection
 
 LocalPilot expects a reachable Ollama API, typically at `http://127.0.0.1:11434`.
 
@@ -44,6 +49,13 @@ python localpilot.py
 ```
 
 By default LocalPilot starts the CLI and tries to open the GUI alongside it. If Tkinter is unavailable, the CLI still runs.
+
+For double-click launch on Windows, use [Run LocalPilot.bat](</C:/LocalPilot/Run LocalPilot.bat>). It will:
+
+- create `.venv` automatically on first run if it does not exist
+- install `requirements.txt` into that virtual environment
+- use `.venv\Scripts\python.exe` for all normal launches
+- keep the window open if startup fails so the error stays visible
 
 ## Safety Rules
 
@@ -151,4 +163,3 @@ git branch -M main
 git remote add origin https://github.com/Code4life69/LocalPilot.git
 git push -u origin main
 ```
-

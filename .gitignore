@@ -8,10 +8,6 @@ __pycache__/
 .coverage
 htmlcov/
 
-logs/*.log
-logs/*.jsonl
-!logs/.gitkeep
-
 workspace/*
 !workspace/.gitkeep
 !workspace/screenshots/

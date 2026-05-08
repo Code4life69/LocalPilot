@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import json
 import queue
+import sys
 import threading
 import tkinter as tk
+import atexit
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
 from typing import Any
 
+from app.git_sync import GitSyncManager
 from app.llm.ollama_client import OllamaClient
 from app.llm.prompts import build_system_prompt
 from app.logger import AppLogger
@@ -26,6 +29,7 @@ class LocalPilotApp:
         self.settings = self._load_json(self.root_dir / "config" / "settings.json")
         self.model_profiles = self._load_json(self.root_dir / "config" / "model_profiles.json")
         self.logger = AppLogger(self.root_dir / self.settings["logs_dir"])
+        self.git_sync = GitSyncManager(self.root_dir, self.settings, self.logger)
         self.memory = MemoryStore(
             self.root_dir / self.settings["memory_dir"],
             self.root_dir / "config" / "capabilities.json",
@@ -39,14 +43,17 @@ class LocalPilotApp:
             main_model=self.model_profiles["models"]["main"],
             vision_model=self.model_profiles["models"]["vision"],
         )
+        self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
         self.gui: LocalPilotGUI | None = None
+        self._shutdown_complete = False
         self.modes = {
             "chat": ChatMode(self),
             "code": CodeMode(self),
             "research": ResearchMode(self),
             "desktop": DesktopMode(self),
         }
+        self._run_git_sync("startup")
 
     def _load_json(self, path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as handle:
@@ -55,6 +62,20 @@ class LocalPilotApp:
     def attach_gui(self, gui: "LocalPilotGUI") -> None:
         self.gui = gui
         self.logger.register_callback(gui.on_event)
+
+    def _initialize_ollama(self) -> None:
+        ollama_settings = self.settings.get("ollama", {})
+        ok, message = self.ollama.ensure_server(
+            auto_start=bool(ollama_settings.get("auto_start_server", True)),
+            wait_seconds=int(ollama_settings.get("startup_wait_seconds", 8)),
+        )
+        role = "Reasoner" if ok else "Ollama"
+        self.logger.event(role, message)
+
+    def _run_git_sync(self, trigger: str) -> None:
+        ok, message = self.git_sync.sync(trigger)
+        role = "GitSync" if ok else "GitSyncWarning"
+        self.logger.event(role, message, persist=False, trigger=trigger)
 
     def _approval_callback(self, prompt: str) -> bool:
         self.logger.event("Safety", "Confirmation required", prompt=prompt)
@@ -130,6 +151,12 @@ class LocalPilotApp:
             ),
         }
 
+    def shutdown(self) -> None:
+        if self._shutdown_complete:
+            return
+        self._shutdown_complete = True
+        self._run_git_sync("shutdown")
+
 
 class LocalPilotGUI:
     def __init__(self, app: LocalPilotApp) -> None:
@@ -161,6 +188,7 @@ class LocalPilotGUI:
         tk.Label(left, text="Conversation / Output", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.output = scrolledtext.ScrolledText(left, wrap=tk.WORD, height=25)
         self.output.pack(fill="both", expand=True)
+        self.output.configure(state="disabled")
 
         input_frame = tk.Frame(left)
         input_frame.pack(fill="x", pady=(8, 0))
@@ -172,20 +200,26 @@ class LocalPilotGUI:
         tk.Label(right, text="Activity Timeline", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         self.timeline = scrolledtext.ScrolledText(right, wrap=tk.WORD, width=45, height=20)
         self.timeline.pack(fill="both", expand=True)
+        self.timeline.configure(state="disabled")
 
         tk.Label(right, text="Recent Logs", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8, 0))
         self.logs = scrolledtext.ScrolledText(right, wrap=tk.WORD, width=45, height=12)
         self.logs.pack(fill="both", expand=True)
+        self.logs.configure(state="disabled")
+
+        for widget in (self.output, self.timeline, self.logs):
+            widget.bind("<Key>", lambda _event: "break")
+            widget.bind("<<Paste>>", lambda _event: "break")
+            widget.bind("<Button-3>", lambda _event: "break")
 
     def submit_input(self) -> None:
         text = self.input_entry.get().strip()
         if not text:
             return
         self.input_entry.delete(0, tk.END)
-        self.output.insert(tk.END, f"\nYou: {text}\n")
+        self._append_readonly(self.output, f"\nYou: {text}\n")
         request = self.app.process_user_input(text)
-        self.output.insert(tk.END, f"LocalPilot: {format_result(request['result'])}\n")
-        self.output.see(tk.END)
+        self._append_readonly(self.output, f"LocalPilot: {format_result(request['result'])}\n")
 
     def on_event(self, event: dict[str, Any]) -> None:
         self.event_queue.put(event)
@@ -199,10 +233,8 @@ class LocalPilotGUI:
             if role.startswith("Mode:"):
                 self.mode_var.set(role.replace("Mode:", "Mode: "))
             line = f"[{event['timestamp']}] {role} -> {message}\n"
-            self.timeline.insert(tk.END, line)
-            self.timeline.see(tk.END)
-            self.logs.insert(tk.END, line)
-            self.logs.see(tk.END)
+            self._append_readonly(self.timeline, line)
+            self._append_readonly(self.logs, line)
         self.root.after(150, self._drain_events)
 
     def request_approval(self, prompt: str) -> bool:
@@ -218,18 +250,51 @@ class LocalPilotGUI:
         return approved["value"]
 
     def run(self) -> None:
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.root.mainloop()
+
+    def on_close(self) -> None:
+        self.app.shutdown()
+        self.root.destroy()
+
+    def _append_readonly(self, widget: scrolledtext.ScrolledText, text: str) -> None:
+        widget.configure(state="normal")
+        widget.insert(tk.END, text)
+        widget.see(tk.END)
+        widget.configure(state="disabled")
 
 
 def format_result(result: dict[str, Any]) -> str:
     if "message" in result:
         return str(result["message"])
+    if result.get("results"):
+        lines = [f"Research results for: {result.get('query', '')}"]
+        for item in result["results"]:
+            lines.append(f"- {item.get('title', '')}")
+            lines.append(f"  {item.get('url', '')}")
+            if item.get("snippet"):
+                lines.append(f"  {item['snippet']}")
+        return "\n".join(lines)
     return json.dumps(result, indent=2)
 
 
+def safe_console_print(text: str = "") -> None:
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        sanitized = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(sanitized)
+
+
 def run_cli(app: LocalPilotApp) -> None:
-    print("LocalPilot CLI started. Type 'exit' to quit.")
-    print(app.describe_capabilities())
+    safe_console_print("LocalPilot CLI started. Type 'exit' to quit.")
+    safe_console_print(app.describe_capabilities())
+    if app.ollama.last_status not in {"running", "started_by_localpilot"}:
+        safe_console_print()
+        safe_console_print(
+            app.ollama.build_unavailable_message(auto_start_attempted=app.ollama.last_status == "start_timeout")
+        )
     while True:
         try:
             user_text = input("\nYou> ").strip()
@@ -241,12 +306,13 @@ def run_cli(app: LocalPilotApp) -> None:
         if user_text.lower() in {"exit", "quit"}:
             break
         request = app.process_user_input(user_text)
-        print(f"\nLocalPilot> {format_result(request['result'])}")
+        safe_console_print(f"\nLocalPilot> {format_result(request['result'])}")
 
 
 def main() -> int:
     root_dir = Path(__file__).resolve().parent.parent
     app = LocalPilotApp(root_dir)
+    atexit.register(app.shutdown)
     enable_gui = bool(app.settings.get("enable_gui", True))
 
     if enable_gui:

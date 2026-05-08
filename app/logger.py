@@ -22,7 +22,7 @@ class AppLogger:
     def register_callback(self, callback: EventCallback) -> None:
         self._callbacks.append(callback)
 
-    def event(self, role: str, message: str, **extra: Any) -> dict[str, Any]:
+    def event(self, role: str, message: str, persist: bool = True, **extra: Any) -> dict[str, Any]:
         entry = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "role": role,
@@ -33,11 +33,12 @@ class AppLogger:
         if extra:
             line += f" | {json.dumps(extra, ensure_ascii=True)}"
 
-        with self._lock:
-            with self._text_path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-            with self._jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+        if persist:
+            with self._lock:
+                with self._text_path.open("a", encoding="utf-8") as handle:
+                    handle.write(line + "\n")
+                with self._jsonl_path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
 
         for callback in list(self._callbacks):
             try:
@@ -45,4 +46,3 @@ class AppLogger:
             except Exception:
                 continue
         return entry
-
