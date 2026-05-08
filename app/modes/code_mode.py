@@ -125,9 +125,12 @@ class CodeMode:
             if ":" in candidate or "\\" in candidate or "/" in candidate:
                 return str(Path(candidate))
 
-        path_match = re.search(r"([A-Za-z]:\\[^\n\r]+)", text)
+        path_match = re.search(r"([A-Za-z]:\\[A-Za-z0-9_ .\\-]+)", text)
         if path_match:
-            return path_match.group(1).strip().rstrip(".")
+            raw_path = path_match.group(1).strip()
+            raw_path = re.split(r"(?<=[A-Za-z0-9_])\.\s+[A-Z]", raw_path)[0]
+            raw_path = raw_path.rstrip(". ")
+            return raw_path
         return None
 
     def _calculator_files(self, target_dir: Path) -> dict[str, str]:
