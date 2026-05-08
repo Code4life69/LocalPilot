@@ -7,6 +7,7 @@ import sys
 import threading
 import tkinter as tk
 import atexit
+import time
 from pathlib import Path
 from tkinter import messagebox, scrolledtext, ttk
 from typing import Any
@@ -248,6 +249,8 @@ class LocalPilotGUI:
         self.root.minsize(1100, 760)
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.desktop_overlay: tk.Toplevel | None = None
+        self.desktop_overlay_action_label: tk.Label | None = None
+        self.desktop_overlay_shown_at: float | None = None
         self.memory_text: scrolledtext.ScrolledText | None = None
         self.last_debug_image_path: Path | None = None
         self._build_widgets()
@@ -597,6 +600,10 @@ class LocalPilotGUI:
 
         def build_overlay() -> None:
             if self.desktop_overlay is not None and self.desktop_overlay.winfo_exists():
+                if self.desktop_overlay_action_label is not None and self.desktop_overlay_action_label.winfo_exists():
+                    self.desktop_overlay_action_label.configure(text=f"Current action: {action_name}")
+                self.desktop_overlay.lift()
+                self.desktop_overlay.update_idletasks()
                 return
 
             overlay = tk.Toplevel(self.root)
@@ -659,18 +666,43 @@ class LocalPilotGUI:
             footer.pack(padx=24, pady=(0, 18))
 
             self.desktop_overlay = overlay
+            self.desktop_overlay_action_label = action
+            self.desktop_overlay_shown_at = time.monotonic()
+            overlay.update_idletasks()
+            try:
+                overlay.update()
+            except tk.TclError:
+                pass
 
-        self.root.after(0, build_overlay)
+        if threading.current_thread() is threading.main_thread():
+            build_overlay()
+            self.root.update_idletasks()
+            try:
+                self.root.update()
+            except tk.TclError:
+                pass
+        else:
+            self.root.after(0, build_overlay)
 
     def hide_desktop_busy_overlay(self) -> None:
         def destroy_overlay() -> None:
             if self.desktop_overlay is not None and self.desktop_overlay.winfo_exists():
+                shown_at = self.desktop_overlay_shown_at or time.monotonic()
+                elapsed_ms = (time.monotonic() - shown_at) * 1000
+                min_visible_ms = 800
+                remaining_ms = max(0, int(min_visible_ms - elapsed_ms))
+                if remaining_ms > 0:
+                    self.root.after(remaining_ms, destroy_overlay)
+                    self.desktop_overlay_shown_at = None
+                    return
                 try:
                     self.desktop_overlay.grab_release()
                 except Exception:
                     pass
                 self.desktop_overlay.destroy()
             self.desktop_overlay = None
+            self.desktop_overlay_action_label = None
+            self.desktop_overlay_shown_at = None
 
         self.root.after(0, destroy_overlay)
 
