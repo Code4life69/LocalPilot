@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import sys
 import threading
@@ -179,6 +180,7 @@ class LocalPilotGUI:
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.desktop_overlay: tk.Toplevel | None = None
         self.memory_text: scrolledtext.ScrolledText | None = None
+        self.last_debug_image_path: Path | None = None
         self._build_widgets()
         self._refresh_status_bar()
         self.root.after(150, self._drain_events)
@@ -321,6 +323,7 @@ class LocalPilotGUI:
     def submit_text(self, text: str) -> None:
         self._append_chat_message("You", text, speaker_tag="user")
         request = self.app.process_user_input(text)
+        self._remember_debug_image(request["result"])
         rendered = format_result(request["result"])
         speaker_tag = "assistant"
         body_tag = "body"
@@ -407,6 +410,7 @@ class LocalPilotGUI:
             ("Show Notes", lambda: self.submit_text("show notes")),
             ("Take Screenshot", lambda: self.submit_text("take screenshot")),
             ("Mouse Position", lambda: self.submit_text("get mouse position")),
+            ("Open Last Debug Image", self.open_last_debug_image),
             ("Clear Chat", self.clear_chat),
         ]
         for label, command in actions:
@@ -441,6 +445,50 @@ class LocalPilotGUI:
     def _maybe_refresh_memory(self, result: dict[str, Any]) -> None:
         if any(key in result for key in ("content", "matches", "message")):
             self._load_memory_panel()
+
+    def _remember_debug_image(self, result: dict[str, Any]) -> None:
+        if not isinstance(result, dict):
+            return
+        path_value = result.get("path")
+        if not path_value:
+            return
+        path = Path(path_value)
+        if "debug_views" not in path.as_posix():
+            return
+        if not path.is_absolute():
+            path = self.app.root_dir / path
+        self.last_debug_image_path = path
+
+    def open_last_debug_image(self) -> None:
+        if self.last_debug_image_path is None:
+            self._append_chat_message(
+                "LocalPilot",
+                "No desktop understanding image is available yet. Run `visualize desktop understanding` first.",
+                speaker_tag="assistant",
+            )
+            return
+        if not self.last_debug_image_path.exists():
+            self._append_chat_message(
+                "LocalPilot",
+                f"Last debug image not found: {self.last_debug_image_path}",
+                speaker_tag="assistant",
+                body_tag="error",
+            )
+            return
+        try:
+            os.startfile(str(self.last_debug_image_path))
+            self._append_chat_message(
+                "LocalPilot",
+                f"Opened debug image:\n{self.last_debug_image_path}",
+                speaker_tag="assistant",
+            )
+        except OSError as exc:
+            self._append_chat_message(
+                "LocalPilot",
+                f"Could not open debug image: {exc}",
+                speaker_tag="assistant",
+                body_tag="error",
+            )
 
     def _load_default_panels(self) -> None:
         self._append_chat_message(
@@ -559,6 +607,8 @@ class LocalPilotGUI:
 
 
 def format_result(result: dict[str, Any]) -> str:
+    if result.get("ok") and result.get("path") and "debug_views" in str(result.get("path", "")).replace("\\", "/"):
+        return f"Desktop understanding image saved:\n{result['path']}"
     if "message" in result:
         return str(result["message"])
     if "content" in result:
