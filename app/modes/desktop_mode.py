@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import re
 
-from app.tools.desktop_debug import visualize_desktop_understanding
 from app.tools.desktop_flow import DesktopExecutionFlow
+from app.tools.desktop_visualizer import visualize_desktop_understanding
 from app.tools.mouse_keyboard import click, hotkey, move_mouse, type_text
 from app.tools.screen import get_active_window_basic, get_mouse_position, take_screenshot
 from app.tools.windows_ui import get_active_window_title, get_focused_control, list_visible_controls

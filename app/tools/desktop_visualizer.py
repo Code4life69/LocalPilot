@@ -22,9 +22,14 @@ def visualize_desktop_understanding(screenshots_dir: str, output_dir: str) -> di
 
     target_dir = Path(output_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    output_path = target_dir / f"desktop_debug_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    output_path = target_dir / f"desktop_understanding_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+    display_path = output_path
+    try:
+        display_path = output_path.relative_to(Path.cwd())
+    except ValueError:
+        display_path = output_path
 
-    annotate_debug_view(
+    annotate_desktop_understanding(
         screenshot_path=screenshot["path"],
         output_path=output_path,
         active_window=active_window,
@@ -33,16 +38,19 @@ def visualize_desktop_understanding(screenshots_dir: str, output_dir: str) -> di
         mouse=mouse,
     )
 
-    title = active_window.get("title") if active_window.get("ok") else "Unknown"
+    controls = visible_controls.get("controls", []) if visible_controls.get("ok") else []
+    focused_name = focused_control.get("name") or focused_control.get("control_type") or "Unknown"
     return {
         "ok": True,
-        "message": f"Saved desktop understanding view to {output_path}",
-        "path": str(output_path),
-        "active_window_title": title,
+        "message": str(display_path),
+        "path": str(display_path),
+        "active_window_title": active_window.get("title", "Unknown"),
+        "focused_control": focused_name,
+        "visible_control_count": len(controls),
     }
 
 
-def annotate_debug_view(
+def annotate_desktop_understanding(
     screenshot_path: str | Path,
     output_path: str | Path,
     active_window: dict[str, Any],
@@ -67,25 +75,22 @@ def annotate_debug_view(
             font=font,
         )
 
-    focused_bounds = focused_control.get("bounds") if focused_control.get("ok") else None
     visible_items = visible_controls.get("controls", []) if visible_controls.get("ok") else []
     for item in visible_items:
-        label = _label_for_control(item)
         _draw_labeled_box(
             draw,
             item.get("bounds"),
-            label,
+            _label_for_control(item),
             outline=(0, 212, 170, 255),
             fill=(0, 212, 170, 20),
             font=font,
         )
 
     if focused_control.get("ok"):
-        label = f"Focused { _label_for_control(focused_control) }"
         _draw_labeled_box(
             draw,
-            focused_bounds,
-            label,
+            focused_control.get("bounds"),
+            f"Focused { _label_for_control(focused_control) }",
             outline=(255, 197, 61, 255),
             fill=(255, 197, 61, 28),
             font=font,
@@ -93,7 +98,7 @@ def annotate_debug_view(
         )
 
     if mouse.get("ok"):
-        _draw_mouse_marker(draw, mouse["x"], mouse["y"])
+        _draw_mouse_marker(draw, mouse["x"], mouse["y"], font)
 
     header_lines = [
         f"Active window: {active_window.get('title', 'Unknown')}" if active_window.get("ok") else "Active window: unavailable",
@@ -136,13 +141,13 @@ def _draw_header(draw: ImageDraw.ImageDraw, lines: list[str], font) -> None:
         y += 16
 
 
-def _draw_mouse_marker(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
+def _draw_mouse_marker(draw: ImageDraw.ImageDraw, x: int, y: int, font) -> None:
     radius = 14
     color = (255, 92, 92, 255)
     draw.ellipse([x - radius, y - radius, x + radius, y + radius], outline=color, width=3)
     draw.line([x - 20, y, x + 20, y], fill=color, width=2)
     draw.line([x, y - 20, x, y + 20], fill=color, width=2)
-    _draw_label(draw, x + 16, y + 8, "Mouse", color, ImageFont.load_default())
+    _draw_label(draw, x + 16, y + 8, "Mouse", color, font)
 
 
 def _label_for_control(control: dict[str, Any]) -> str:
