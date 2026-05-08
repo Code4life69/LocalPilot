@@ -57,10 +57,12 @@ class KeywordRouter:
 
     def classify(self, text: str) -> str:
         lowered = text.lower()
-        if self._looks_like_memory_request(lowered):
-            return "memory"
         if self._looks_like_code_project_request(lowered):
             return "code"
+        if self._looks_like_code_tool_request(lowered):
+            return "code"
+        if self._looks_like_memory_request(lowered):
+            return "memory"
         if self._looks_like_desktop_task_request(lowered):
             return "desktop"
         if self._looks_like_current_fact_request(lowered):
@@ -89,6 +91,31 @@ class KeywordRouter:
         project_words = ("app", "program", "script", "calculator", "project")
         path_hint = ":\\" in lowered or " in c:\\" in lowered or "folder" in lowered
         return any(word in lowered for word in build_words) and any(word in lowered for word in project_words) and path_hint
+
+    def _looks_like_code_tool_request(self, lowered: str) -> bool:
+        return lowered.startswith(
+            (
+                "list ",
+                "read ",
+                "write ",
+                "append ",
+                "copy ",
+                "move ",
+                "mkdir ",
+                "run ",
+                "shell ",
+                "read file",
+                "write file",
+                "append file",
+                "copy file",
+                "move file",
+                "make folder",
+                "create folder",
+                "run command",
+                "list folder",
+                "list files",
+            )
+        )
 
     def _looks_like_desktop_task_request(self, lowered: str) -> bool:
         if lowered in {"visualize desktop", "visualize desktop understanding", "show me what you see"}:

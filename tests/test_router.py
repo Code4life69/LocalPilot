@@ -19,3 +19,5 @@ def test_keyword_routing():
     assert router.classify("visualize desktop") == "desktop"
     assert router.classify("visualize desktop understanding") == "desktop"
     assert router.classify("show me what you see") == "desktop"
+    assert router.classify('write "workspace/final_pass/test_note.txt" "hello"') == "code"
+    assert router.classify('read "workspace/final_pass/test_note.txt"') == "code"

@@ -13,7 +13,7 @@ def take_screenshot(output_dir: str) -> dict:
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
     filename = folder / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    with mss.mss() as sct:
+    with mss.MSS() as sct:
         sct.shot(output=str(filename))
     return {"ok": True, "path": str(filename)}
 

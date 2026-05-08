@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
@@ -28,17 +29,23 @@ def _search_with_ddgs(query: str, max_results: int) -> list[dict]:
         raise RuntimeError(f"duckduckgo-search not installed: {exc}") from exc
 
     results = []
-    with DDGS() as ddgs:
-        for item in ddgs.text(query, max_results=max_results):
-            results.append(
-                {
-                    "title": item.get("title", ""),
-                    "url": item.get("href", ""),
-                    "snippet": item.get("body", ""),
-                }
-            )
-            if len(results) >= max_results:
-                break
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"This package \(`duckduckgo_search`\) has been renamed to `ddgs`!",
+            category=RuntimeWarning,
+        )
+        with DDGS() as ddgs:
+            for item in ddgs.text(query, max_results=max_results):
+                results.append(
+                    {
+                        "title": item.get("title", ""),
+                        "url": item.get("href", ""),
+                        "snippet": item.get("body", ""),
+                    }
+                )
+                if len(results) >= max_results:
+                    break
     return results
 
 

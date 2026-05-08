@@ -90,4 +90,9 @@ class ResearchMode:
             if date_match and "as of" not in lowered:
                 normalized = f"current president of the United States as of {date_match.group(0)}"
 
+        if "current vice president" in lowered:
+            normalized = "current vice president of the United States"
+            if date_match:
+                normalized = f"{normalized} {date_match.group(0)}"
+
         return normalized
