@@ -3,6 +3,7 @@ from __future__ import annotations
 import py_compile
 import re
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 from app.tools import files as file_tools
@@ -134,14 +135,27 @@ class CodeMode:
             return False
         return any(
             hint in lowered
-            for hint in ("app", "program", "gui", "double click", "double-click", "starter", "website", "folder")
+            for hint in (
+                "app",
+                "program",
+                "gui",
+                "double click",
+                "double-click",
+                "starter",
+                "website",
+                "web page",
+                "webpage",
+                "landing page",
+                "html css",
+                "folder",
+            )
         )
 
     def _is_app_verification_request(self, lowered: str) -> bool:
         return lowered.startswith("verify") and "app" in lowered and "run" in lowered
 
     def _detect_supported_app_kind(self, lowered: str) -> str | None:
-        if "website" in lowered:
+        if any(term in lowered for term in ("website", "web page", "webpage", "landing page", "html css", "javascript")):
             return "website"
         if "todo" in lowered:
             return "todo"
@@ -153,7 +167,8 @@ class CodeMode:
     def _scaffold_gui_app(self, text: str, app_kind: str) -> dict:
         target_dir = self._extract_target_directory(text) or self._default_generated_app_dir(app_kind)
         target_path = Path(target_dir)
-        files_to_write = self._build_app_files(app_kind, target_path)
+        website_spec = self._generate_website_spec(text) if app_kind == "website" else None
+        files_to_write = self._build_app_files(app_kind, target_path, website_spec)
         existing_targets = [path for path in files_to_write if Path(path).exists()]
         if existing_targets:
             approved = self.app.ask_approval(
@@ -170,16 +185,27 @@ class CodeMode:
             return verification
 
         display_name = APP_TEMPLATES[app_kind]["display_name"]
+        website_summary = ""
+        if website_spec is not None:
+            website_summary = (
+                f"\nWebsite type: {website_spec['site_type_label']}"
+                f"\nTheme: {website_spec['theme_label']}"
+                f"\nOpen it by double-clicking {APP_TEMPLATES[app_kind]['launcher_name']}."
+            )
         return {
             "ok": folder_result.get("ok", False) and all(item.get("ok", False) for item in write_results),
             "message": (
                 f"{display_name} app created in {target_dir}\n"
                 f"Double-click {APP_TEMPLATES[app_kind]['launcher_name']} to start it."
+                f"{website_summary}"
             ),
             "project_path": target_dir,
             "files": list(files_to_write.keys()),
             "verification": verification,
             "write_results": write_results,
+            "site_type": website_spec["site_type"] if website_spec else None,
+            "theme": website_spec["theme"] if website_spec else None,
+            "generation_mode": website_spec["generation_mode"] if website_spec else None,
         }
 
     def _verify_generated_app(self, text: str) -> dict:
@@ -230,6 +256,15 @@ class CodeMode:
                 py_compile.compile(str(main_path), doraise=True)
             except py_compile.PyCompileError as exc:
                 return {"ok": False, "error": f"Syntax verification failed for {main_path}: {exc.msg}"}
+        else:
+            index_content = main_path.read_text(encoding="utf-8")
+            missing_links = []
+            if 'href="style.css"' not in index_content:
+                missing_links.append("style.css link missing from index.html")
+            if 'src="script.js"' not in index_content:
+                missing_links.append("script.js link missing from index.html")
+            if missing_links:
+                return {"ok": False, "error": "Generated website verification failed.\n" + "\n".join(missing_links)}
 
         return {
             "ok": True,
@@ -285,7 +320,7 @@ class CodeMode:
                 return kind
         return None
 
-    def _build_app_files(self, app_kind: str, target_dir: Path) -> dict[str, str]:
+    def _build_app_files(self, app_kind: str, target_dir: Path, website_spec: dict | None = None) -> dict[str, str]:
         template = APP_TEMPLATES[app_kind]
         display_name = template["display_name"]
         main_filename = template["main_filename"]
@@ -293,38 +328,15 @@ class CodeMode:
         readme_name = template["readme_name"]
 
         return {
-            str(target_dir / main_filename): self._app_main_source(app_kind, display_name),
+            str(target_dir / main_filename): self._app_main_source(app_kind, display_name, website_spec),
             str(target_dir / launcher_name): self._launcher_source(display_name, main_filename),
-            str(target_dir / readme_name): self._readme_source(display_name, launcher_name, main_filename),
-            **self._extra_app_files(app_kind, target_dir),
+            str(target_dir / readme_name): self._readme_source(display_name, launcher_name, main_filename, website_spec),
+            **self._extra_app_files(app_kind, target_dir, website_spec),
         }
 
-    def _app_main_source(self, app_kind: str, display_name: str) -> str:
+    def _app_main_source(self, app_kind: str, display_name: str, website_spec: dict | None = None) -> str:
         sources = {
-            "website": """<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LocalPilot Basic Website</title>
-    <link rel="stylesheet" href="style.css">
-</head>
-<body>
-    <main class="site-shell">
-        <section class="hero-card">
-            <p class="eyebrow">Generated by LocalPilot</p>
-            <h1>Basic Local Website</h1>
-            <p class="lead">
-                This starter site is a clean local scaffold that you can edit immediately.
-            </p>
-            <button id="ctaButton" class="primary-button">Click Me</button>
-            <p id="statusText" class="status-text">The page is ready.</p>
-        </section>
-    </main>
-    <script src="script.js"></script>
-</body>
-</html>
-""",
+            "website": self._website_html_source(website_spec or self._default_website_spec()),
             "calculator": """import tkinter as tk
 
 
@@ -660,12 +672,28 @@ if not "%EXIT_CODE%"=="0" (
 exit /b %EXIT_CODE%
 """
 
-    def _readme_source(self, display_name: str, launcher_name: str, main_filename: str) -> str:
+    def _readme_source(
+        self,
+        display_name: str,
+        launcher_name: str,
+        main_filename: str,
+        website_spec: dict | None = None,
+    ) -> str:
         if display_name == "Website":
+            website_spec = website_spec or self._default_website_spec()
             return f"""{display_name}
 ====================
 
 This website scaffold was generated by LocalPilot.
+
+Website type
+- {website_spec['site_type_label']}
+
+Theme
+- {website_spec['theme_label']}
+
+Prompt focus
+- {website_spec['summary']}
 
 Files
 - index.html: main page
@@ -679,6 +707,7 @@ How to run
 
 Verification
 - LocalPilot verified that index.html, style.css, script.js, and {launcher_name} exist.
+- LocalPilot verified that index.html links style.css and script.js.
 """
         return f"""{display_name}
 ====================
@@ -701,76 +730,489 @@ Verification
 - LocalPilot ran Python syntax verification on {main_filename}.
 """
 
-    def _extra_app_files(self, app_kind: str, target_dir: Path) -> dict[str, str]:
+    def _extra_app_files(self, app_kind: str, target_dir: Path, website_spec: dict | None = None) -> dict[str, str]:
         if app_kind != "website":
             return {}
+        website_spec = website_spec or self._default_website_spec()
         return {
-            str(target_dir / "style.css"): """* {
-    box-sizing: border-box;
-}
+            str(target_dir / "style.css"): self._website_css_source(website_spec),
+            str(target_dir / "script.js"): self._website_js_source(website_spec),
+        }
 
-body {
+    def _generate_website_spec(self, prompt: str) -> dict:
+        deterministic_spec = self._build_website_spec(prompt)
+        deterministic_spec["generation_mode"] = "deterministic"
+        return deterministic_spec
+
+    def _default_website_spec(self) -> dict:
+        return self._build_website_spec("make me a basic local website")
+
+    def _build_website_spec(self, prompt: str) -> dict:
+        lowered = prompt.lower()
+        site_type = self._detect_website_type(lowered)
+        theme = self._detect_website_theme(lowered)
+        tone = self._detect_website_tone(lowered, site_type)
+        context = self._detect_website_context(lowered)
+        title_subject = self._build_website_title_subject(lowered, site_type, context)
+        palette = self._website_palette(theme, site_type, context)
+        layout = self._website_layout(site_type, theme)
+        sections = self._website_sections(site_type, context, lowered)
+        cta_text = self._website_cta_text(site_type, context)
+        footer = self._website_footer(site_type, context)
+        hero_heading, subtitle = self._website_hero_copy(site_type, context, theme, title_subject)
+
+        return {
+            "site_type": site_type,
+            "site_type_label": self._site_type_label(site_type),
+            "theme": theme,
+            "theme_label": self._theme_label(theme),
+            "tone": tone,
+            "title": title_subject,
+            "hero_heading": hero_heading,
+            "subtitle": subtitle,
+            "cta_text": cta_text,
+            "footer": footer,
+            "eyebrow": f"{self._site_type_label(site_type)} | {tone}",
+            "sections": sections,
+            "palette": palette,
+            "layout": layout,
+            "summary": self._website_summary(site_type, context, theme),
+        }
+
+    def _detect_website_type(self, lowered: str) -> str:
+        if "portfolio" in lowered or "projects" in lowered:
+            return "portfolio"
+        if "lawn care" in lowered or "business" in lowered or "contact section" in lowered or "local website" in lowered:
+            return "local_business"
+        if "product" in lowered or "landing page" in lowered or "localpilot" in lowered:
+            return "product"
+        if "ai assistant" in lowered:
+            return "landing"
+        return "basic"
+
+    def _detect_website_theme(self, lowered: str) -> str:
+        if "dark" in lowered or "futuristic" in lowered or "ai assistant" in lowered:
+            return "dark"
+        return "light"
+
+    def _detect_website_tone(self, lowered: str, site_type: str) -> str:
+        if "futuristic" in lowered:
+            return "Futuristic"
+        if "simple" in lowered or "basic" in lowered:
+            return "Simple"
+        if site_type == "portfolio":
+            return "Confident"
+        if site_type == "product":
+            return "Focused"
+        if site_type == "local_business":
+            return "Friendly"
+        return "Clean"
+
+    def _detect_website_context(self, lowered: str) -> str:
+        if "lawn care" in lowered:
+            return "lawn_care"
+        if "portfolio" in lowered or "coding projects" in lowered:
+            return "coding_portfolio"
+        if "localpilot" in lowered:
+            return "localpilot"
+        if "ai assistant" in lowered:
+            return "ai_assistant"
+        if "business" in lowered:
+            return "business"
+        return "generic"
+
+    def _build_website_title_subject(self, lowered: str, site_type: str, context: str) -> str:
+        if context == "lawn_care":
+            return "FreshCut Lawn Care"
+        if context == "coding_portfolio":
+            return "Project Portfolio"
+        if context == "localpilot":
+            return "LocalPilot"
+        if context == "ai_assistant":
+            return "NeonPilot AI"
+        if context == "business":
+            return "Summit Business Studio"
+        if site_type == "portfolio":
+            return "Creative Portfolio"
+        if site_type == "product":
+            return "Product Launch Site"
+        return "Local Website Starter"
+
+    def _website_palette(self, theme: str, site_type: str, context: str) -> dict:
+        if context == "lawn_care":
+            return {
+                "page_bg": "#f4fbf4",
+                "surface": "#ffffff",
+                "surface_alt": "#e7f6e7",
+                "text": "#16311d",
+                "muted": "#587160",
+                "accent": "#2f9e44",
+                "accent_2": "#dff5cf",
+                "border": "#cfe7cf",
+            }
+        if theme == "dark" and context == "ai_assistant":
+            return {
+                "page_bg": "#08111f",
+                "surface": "#0f1b33",
+                "surface_alt": "#132544",
+                "text": "#eaf3ff",
+                "muted": "#9db2cf",
+                "accent": "#61dafb",
+                "accent_2": "#8b5cf6",
+                "border": "#23385e",
+            }
+        if site_type == "portfolio":
+            return {
+                "page_bg": "#f6f8fb",
+                "surface": "#ffffff",
+                "surface_alt": "#eef3ff",
+                "text": "#1a2130",
+                "muted": "#586278",
+                "accent": "#2563eb",
+                "accent_2": "#c7d8ff",
+                "border": "#d9e2f0",
+            }
+        if site_type == "product":
+            return {
+                "page_bg": "#fff8f1",
+                "surface": "#ffffff",
+                "surface_alt": "#fff1df",
+                "text": "#241815",
+                "muted": "#6d5a54",
+                "accent": "#ef6c00",
+                "accent_2": "#ffd9b0",
+                "border": "#f2d4bc",
+            }
+        return {
+            "page_bg": "#f7f8fb",
+            "surface": "#ffffff",
+            "surface_alt": "#eef2f8",
+            "text": "#192231",
+            "muted": "#5d6b80",
+            "accent": "#0f766e",
+            "accent_2": "#d4f3ef",
+            "border": "#d7e3ea",
+        }
+
+    def _website_layout(self, site_type: str, theme: str) -> str:
+        if site_type == "portfolio":
+            return "project-grid"
+        if site_type == "local_business":
+            return "service-stack"
+        if theme == "dark":
+            return "neon-panels"
+        if site_type == "product":
+            return "feature-spotlight"
+        return "clean-sections"
+
+    def _website_sections(self, site_type: str, context: str, lowered: str) -> list[dict[str, str]]:
+        if context == "lawn_care":
+            return [
+                {"title": "Services", "body": "Weekly mowing, edging, seasonal cleanups, and dependable neighborhood scheduling."},
+                {"title": "Why Homeowners Call", "body": "Fast estimates, clean finishes, and clear arrival windows that make local service feel easy."},
+                {"title": "Contact", "body": "Invite visitors to call, text, or request a same-day quote from the contact section."},
+            ]
+        if site_type == "portfolio":
+            return [
+                {"title": "Featured Projects", "body": "Highlight your strongest coding builds with room for screenshots, summaries, and links."},
+                {"title": "Skills", "body": "Show the languages, frameworks, and tools you use to ship practical software."},
+                {"title": "About", "body": "Use this section to explain how you approach problem-solving, UI, and reliability."},
+            ]
+        if context == "localpilot":
+            return [
+                {"title": "Why LocalPilot", "body": "Explain the value of a local Windows assistant that uses guarded tools and local models."},
+                {"title": "Core Modes", "body": "Describe chat, coding, research, desktop, and memory as separate trustworthy modes."},
+                {"title": "Safety Rules", "body": "Show approvals, visibility, and control boundaries so users understand how actions stay guarded."},
+            ]
+        if context == "ai_assistant":
+            return [
+                {"title": "Capabilities", "body": "Introduce desktop awareness, coding help, research, and live tool orchestration."},
+                {"title": "Workflow", "body": "Show a clear UI Automation first path with screenshot reasoning only when needed."},
+                {"title": "Human Control", "body": "Keep the assistant bold in presentation but explicit about approvals and safety gates."},
+            ]
+        if "contact" in lowered or site_type == "local_business":
+            return [
+                {"title": "Services", "body": "Summarize your offer in concrete terms so visitors quickly understand what you do."},
+                {"title": "About The Business", "body": "Build trust with a short origin story, values, or proof of reliability."},
+                {"title": "Contact", "body": "Include a strong call to reach out, request a quote, or book a conversation."},
+            ]
+        if site_type == "product":
+            return [
+                {"title": "Feature Highlights", "body": "Break the product into benefits, workflow advantages, and clear next actions."},
+                {"title": "How It Works", "body": "Use a short section to explain the product in plain steps instead of vague hype."},
+                {"title": "Get Started", "body": "End with one direct call to action that makes the next click obvious."},
+            ]
+        return [
+            {"title": "Overview", "body": "A clean starter section for describing the website in your own words."},
+            {"title": "Highlights", "body": "Use this area for the strongest reasons a visitor should keep reading."},
+            {"title": "Next Step", "body": "Close with a direct action, contact option, or launch message."},
+        ]
+
+    def _website_cta_text(self, site_type: str, context: str) -> str:
+        if context == "lawn_care":
+            return "Request A Quote"
+        if site_type == "portfolio":
+            return "View My Projects"
+        if context == "localpilot":
+            return "See The Product"
+        if context == "ai_assistant":
+            return "Enter The Workflow"
+        if site_type == "local_business":
+            return "Contact The Business"
+        if site_type == "product":
+            return "Start With The Product"
+        return "Explore The Site"
+
+    def _website_footer(self, site_type: str, context: str) -> str:
+        if context == "lawn_care":
+            return "FreshCut Lawn Care keeps local service simple, clear, and dependable."
+        if site_type == "portfolio":
+            return "Built to showcase practical coding work and the thinking behind it."
+        if context == "localpilot":
+            return "LocalPilot focuses on visible, guarded local AI workflows."
+        if context == "ai_assistant":
+            return "A futuristic presentation with clear human control still built in."
+        return "Generated locally by LocalPilot so you can keep building from a working starter."
+
+    def _website_hero_copy(self, site_type: str, context: str, theme: str, title_subject: str) -> tuple[str, str]:
+        if context == "lawn_care":
+            return (
+                "Make your curb appeal feel maintained every week.",
+                "This local business layout is tuned for a lawn care service with quick trust cues, service sections, and a contact-focused call to action.",
+            )
+        if site_type == "portfolio":
+            return (
+                "Show the projects that prove how you build.",
+                "This portfolio layout gives your coding work a clear intro, a featured project area, and a clean place to explain your strengths.",
+            )
+        if context == "localpilot":
+            return (
+                "A local product page built for LocalPilot.",
+                "This prompt-aware product landing page emphasizes trust, separate modes, and a grounded local workflow instead of vague agent hype.",
+            )
+        if context == "ai_assistant":
+            return (
+                "A dark, futuristic shell for an AI assistant.",
+                "This version leans into a darker palette, sharper contrast, and a more cinematic presentation while keeping the page simple and static.",
+            )
+        if site_type == "local_business":
+            return (
+                f"{title_subject} helps visitors understand your service fast.",
+                "This business-style starter keeps the layout practical with service sections, a trust-building middle area, and a visible contact ending.",
+            )
+        if site_type == "product":
+            return (
+                f"{title_subject} gets a focused landing page.",
+                "This product-oriented starter uses a feature-first layout with an obvious next step and clean sections you can edit immediately.",
+            )
+        return (
+            "A clean local website starter you can edit right away.",
+            "This generic version stays simple on purpose while still giving you a hero, supporting sections, and a ready launcher.",
+        )
+
+    def _website_summary(self, site_type: str, context: str, theme: str) -> str:
+        if context == "lawn_care":
+            return "Local business site for a lawn care service."
+        if site_type == "portfolio":
+            return "Portfolio website for coding projects."
+        if context == "localpilot":
+            return "Product landing page for LocalPilot."
+        if context == "ai_assistant":
+            return f"{theme.title()} futuristic website for an AI assistant."
+        if site_type == "local_business":
+            return "Simple business website with contact-focused sections."
+        if site_type == "product":
+            return "Product page with clear feature and CTA sections."
+        return "Generic basic website starter."
+
+    def _site_type_label(self, site_type: str) -> str:
+        labels = {
+            "landing": "Landing Page",
+            "portfolio": "Portfolio",
+            "local_business": "Local Business Site",
+            "product": "Product Page",
+            "basic": "Generic Basic Site",
+        }
+        return labels[site_type]
+
+    def _theme_label(self, theme: str) -> str:
+        return "Dark" if theme == "dark" else "Light"
+
+    def _website_html_source(self, website_spec: dict) -> str:
+        sections_html = "\n".join(
+            f"""        <section class="content-card">
+            <h2>{escape(section['title'])}</h2>
+            <p>{escape(section['body'])}</p>
+        </section>"""
+            for section in website_spec["sections"]
+        )
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{escape(website_spec['title'])}</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body data-site-type="{website_spec['site_type']}" data-theme="{website_spec['theme']}" data-layout="{website_spec['layout']}">
+    <header class="hero-shell">
+        <div class="hero-card">
+            <p class="eyebrow">{escape(website_spec['eyebrow'])}</p>
+            <h1>{escape(website_spec['hero_heading'])}</h1>
+            <p class="lead">{escape(website_spec['subtitle'])}</p>
+            <div class="hero-actions">
+                <button id="ctaButton" class="primary-button">{escape(website_spec['cta_text'])}</button>
+                <span id="statusText" class="status-text">Website ready.</span>
+            </div>
+        </div>
+    </header>
+    <main class="content-shell">
+{sections_html}
+    </main>
+    <footer class="site-footer">
+        <p>{escape(website_spec['footer'])}</p>
+    </footer>
+    <script src="script.js"></script>
+</body>
+</html>
+"""
+
+    def _website_css_source(self, website_spec: dict) -> str:
+        palette = website_spec["palette"]
+        return f"""* {{
+    box-sizing: border-box;
+}}
+
+:root {{
+    --page-bg: {palette['page_bg']};
+    --surface: {palette['surface']};
+    --surface-alt: {palette['surface_alt']};
+    --text: {palette['text']};
+    --muted: {palette['muted']};
+    --accent: {palette['accent']};
+    --accent-2: {palette['accent_2']};
+    --border: {palette['border']};
+}}
+
+body {{
     margin: 0;
     min-height: 100vh;
     font-family: "Segoe UI", sans-serif;
-    background: linear-gradient(135deg, #0f172a, #1d4ed8);
-    color: #eff6ff;
-}
+    background: radial-gradient(circle at top, var(--accent-2), var(--page-bg) 42%);
+    color: var(--text);
+}}
 
-.site-shell {
-    min-height: 100vh;
-    display: grid;
-    place-items: center;
-    padding: 24px;
-}
+.hero-shell {{
+    padding: 48px 24px 20px;
+}}
 
-.hero-card {
-    width: min(720px, 100%);
-    padding: 40px;
+.hero-card,
+.content-card {{
+    width: min(1080px, 100%);
+    margin: 0 auto;
+    border: 1px solid var(--border);
     border-radius: 24px;
-    background: rgba(15, 23, 42, 0.78);
-    box-shadow: 0 24px 60px rgba(15, 23, 42, 0.35);
-}
+    background: var(--surface);
+    box-shadow: 0 20px 55px rgba(15, 23, 42, 0.12);
+}}
 
-.eyebrow {
+.hero-card {{
+    padding: 40px;
+}}
+
+.content-shell {{
+    display: grid;
+    gap: 18px;
+    padding: 0 24px 32px;
+}}
+
+.content-card {{
+    padding: 28px;
+    background: var(--surface-alt);
+}}
+
+.eyebrow {{
     margin: 0 0 12px;
     text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: #93c5fd;
+    letter-spacing: 0.16em;
+    color: var(--accent);
     font-size: 0.78rem;
-}
+    font-weight: 700;
+}}
 
-h1 {
-    margin: 0 0 12px;
-    font-size: clamp(2rem, 4vw, 3.4rem);
-}
+h1 {{
+    margin: 0 0 14px;
+    font-size: clamp(2.3rem, 5vw, 4.4rem);
+    line-height: 1.05;
+}}
+
+h2 {{
+    margin: 0 0 10px;
+    font-size: 1.45rem;
+}}
 
 .lead,
-.status-text {
-    font-size: 1.05rem;
-    line-height: 1.6;
-}
+.content-card p,
+.status-text,
+.site-footer p {{
+    line-height: 1.7;
+    font-size: 1rem;
+}}
 
-.primary-button {
-    margin-top: 16px;
-    padding: 14px 22px;
+.lead,
+.content-card p,
+.status-text {{
+    color: var(--muted);
+}}
+
+.hero-actions {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin-top: 22px;
+}}
+
+.primary-button {{
     border: none;
     border-radius: 999px;
-    background: #f8fafc;
-    color: #0f172a;
+    padding: 14px 22px;
+    background: var(--accent);
+    color: {"#07111f" if website_spec['theme'] == "dark" else "#ffffff"};
     font-size: 1rem;
     font-weight: 700;
     cursor: pointer;
-}
-""",
-            str(target_dir / "script.js"): """const button = document.getElementById("ctaButton");
+}}
+
+.site-footer {{
+    padding: 0 24px 36px;
+}}
+
+.site-footer p {{
+    width: min(1080px, 100%);
+    margin: 0 auto;
+    color: var(--muted);
+}}
+
+@media (min-width: 860px) {{
+    .content-shell {{
+        grid-template-columns: repeat({3 if website_spec['site_type'] in {'portfolio', 'product'} else 1}, minmax(0, 1fr));
+    }}
+
+    .content-card:last-child {{
+        {"grid-column: span 3;" if website_spec['site_type'] in {'portfolio', 'product'} else ""}
+    }}
+}}
+"""
+
+    def _website_js_source(self, website_spec: dict) -> str:
+        return f"""const button = document.getElementById("ctaButton");
 const statusText = document.getElementById("statusText");
 
-button.addEventListener("click", () => {
-    statusText.textContent = "You clicked the button. LocalPilot's starter website is working.";
-});
-""",
-        }
+button.addEventListener("click", () => {{
+    statusText.textContent = "{website_spec['cta_text']} clicked. This {website_spec['site_type_label'].lower()} is ready for your edits.";
+}});
+"""
 
     def _extract_path(self, text: str) -> str | None:
         match = re.search(r'"([^"]+)"', text)

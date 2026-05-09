@@ -101,11 +101,14 @@ class KeywordRouter:
             "web site",
             "web page",
             "webpage",
+            "landing page",
             "local website",
             "local site",
             "html css js",
+            "html css",
             "html css and javascript",
             "html css javascript",
+            "javascript",
         )
         disqualifiers = (
             "search the website",

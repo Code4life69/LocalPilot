@@ -27,6 +27,8 @@ def test_keyword_routing():
     assert router.classify("create a simple website") == "code"
     assert router.classify("make me a website with html css and javascript") == "code"
     assert router.classify("make a local website in a new folder") == "code"
+    assert router.classify("make me a product landing page for LocalPilot") == "code"
+    assert router.classify("make me a dark futuristic website for an AI assistant") == "code"
     assert router.classify("search the website for prices") != "code"
     assert router.classify("open this website") != "code"
     assert router.classify("look up websites about local ai") != "code"

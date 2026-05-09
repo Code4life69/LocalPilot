@@ -70,6 +70,52 @@ def test_website_request_creates_expected_static_files(tmp_path):
     assert (project_path / "README.txt").exists()
     assert result["verification"]["static_files_verified"] is True
     assert "Double-click Run Website.bat" in result["message"]
+    assert "Website type:" in result["message"]
+    assert "Open it by double-clicking Run Website.bat." in result["message"]
+
+
+def test_prompt_aware_website_generator_creates_different_site_content(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    lawn_result = mode.handle({"user_text": "make me a local website for a lawn care business"})
+    portfolio_result = mode.handle({"user_text": "make me a portfolio website for my coding projects"})
+    ai_result = mode.handle({"user_text": "make me a dark futuristic website for an AI assistant"})
+
+    assert lawn_result["ok"]
+    assert portfolio_result["ok"]
+    assert ai_result["ok"]
+
+    lawn_path = Path(lawn_result["project_path"])
+    portfolio_path = Path(portfolio_result["project_path"])
+    ai_path = Path(ai_result["project_path"])
+
+    lawn_html = (lawn_path / "index.html").read_text(encoding="utf-8")
+    portfolio_html = (portfolio_path / "index.html").read_text(encoding="utf-8")
+    ai_html = (ai_path / "index.html").read_text(encoding="utf-8")
+
+    lawn_css = (lawn_path / "style.css").read_text(encoding="utf-8")
+    portfolio_css = (portfolio_path / "style.css").read_text(encoding="utf-8")
+    ai_css = (ai_path / "style.css").read_text(encoding="utf-8")
+
+    assert "FreshCut Lawn Care" in lawn_html
+    assert "Request A Quote" in lawn_html
+    assert "Local Business Site" in lawn_result["message"]
+    assert "#2f9e44" in lawn_css
+
+    assert "Project Portfolio" in portfolio_html
+    assert "View My Projects" in portfolio_html
+    assert "Portfolio" in portfolio_result["message"]
+    assert "#2563eb" in portfolio_css
+
+    assert "NeonPilot AI" in ai_html
+    assert "Enter The Workflow" in ai_html
+    assert "Dark" in ai_result["message"]
+    assert "#61dafb" in ai_css
+
+    assert lawn_html != portfolio_html
+    assert portfolio_html != ai_html
+    assert lawn_css != ai_css
 
 
 def test_generated_app_verification_uses_latest_matching_folder(tmp_path):
@@ -105,3 +151,19 @@ def test_all_templates_have_required_files():
         assert template["main_filename"] in {"main.py", "index.html"}
         assert template["launcher_name"].endswith(".bat")
         assert template["readme_name"] == "README.txt"
+
+
+def test_website_verification_checks_asset_links(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle({"user_text": "make me a product landing page for LocalPilot"})
+    project_path = Path(result["project_path"])
+    index_path = project_path / "index.html"
+    broken_html = index_path.read_text(encoding="utf-8").replace('src="script.js"', "")
+    index_path.write_text(broken_html, encoding="utf-8")
+
+    verification = mode._verify_app_outputs(project_path, "website")
+
+    assert verification["ok"] is False
+    assert "script.js link missing" in verification["error"]
