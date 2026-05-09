@@ -42,8 +42,8 @@ class LocalPilotApp:
         self.ollama = OllamaClient(
             host=self.model_profiles["ollama"]["host"],
             timeout_seconds=self.model_profiles["ollama"]["timeout_seconds"],
-            main_model=self.model_profiles["models"]["main"],
-            vision_model=self.model_profiles["models"]["vision"],
+            model_profiles=self.model_profiles,
+            default_role=self.settings.get("active_model_role", self.model_profiles.get("default_role", "main")),
         )
         self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
@@ -101,6 +101,10 @@ class LocalPilotApp:
             f"Safety: {'; '.join(caps['safety_rules'])}\n"
             f"Known limits: {'; '.join(caps['known_limits'])}"
         )
+
+    def describe_model_status(self) -> str:
+        default_role = self.settings.get("active_model_role", self.model_profiles.get("default_role", "main"))
+        return self.ollama.build_model_status_report(default_role=default_role)
 
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
@@ -501,8 +505,14 @@ class LocalPilotGUI:
 
     def _refresh_status_bar(self) -> None:
         self.ollama_var.set(self.app.ollama.last_status.replace("_", " "))
-        self.main_model_var.set(self.app.ollama.active_main_model or self.app.model_profiles["models"]["main"])
-        self.vision_model_var.set(self.app.ollama.active_vision_model or self.app.model_profiles["models"]["vision"])
+        self.main_model_var.set(
+            self.app.ollama.active_main_model
+            or self.app.model_profiles.get("main", {}).get("model", "n/a")
+        )
+        self.vision_model_var.set(
+            self.app.ollama.active_vision_model
+            or self.app.model_profiles.get("vision", {}).get("model", "n/a")
+        )
         self.safety_var.set("Guarded")
 
     def _load_memory_panel(self) -> None:

@@ -29,7 +29,12 @@ class ChatMode:
                 "ok": True,
                 "message": self._load_trust_checklist(),
             }
-        response = self.app.ollama.chat(self.app.system_prompt, text)
+        if lowered == "model status":
+            return {
+                "ok": True,
+                "message": self.app.describe_model_status(),
+            }
+        response = self.app.ollama.chat_with_role("main", self.app.system_prompt, text)
         return {"ok": True, "message": response}
 
     def _load_trust_checklist(self) -> str:

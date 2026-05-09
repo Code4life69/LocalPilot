@@ -24,6 +24,14 @@ class DummyApp:
         self.root_dir = Path(root_dir)
         self.logger = DummyLogger()
         self.safety = DummySafety()
+        self.system_prompt = "system prompt"
+        self.ollama = type(
+            "StubOllama",
+            (),
+            {
+                "chat_with_role": lambda self, role, system_prompt, user_text: f"{role}|{user_text}",
+            },
+        )()
 
     def ask_approval(self, prompt):
         return True
@@ -151,6 +159,16 @@ def test_all_templates_have_required_files():
         assert template["main_filename"] in {"main.py", "index.html"}
         assert template["launcher_name"].endswith(".bat")
         assert template["readme_name"] == "README.txt"
+
+
+def test_code_mode_uses_coder_role_for_llm_fallback(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle({"user_text": "explain this code bug"})
+
+    assert result["ok"]
+    assert result["message"] == "coder|explain this code bug"
 
 
 def test_website_verification_checks_asset_links(tmp_path):

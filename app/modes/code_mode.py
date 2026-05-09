@@ -127,7 +127,7 @@ class CodeMode:
                 return {"ok": False, "error": "Command cancelled by user."}
             return shell_tools.run_command(command, cwd=str(Path.cwd()))
 
-        response = self.app.ollama.chat(self.app.system_prompt, text)
+        response = self.app.ollama.chat_with_role("coder", self.app.system_prompt, text)
         return {"ok": True, "message": response}
 
     def _is_app_scaffold_request(self, lowered: str) -> bool:

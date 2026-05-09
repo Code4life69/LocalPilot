@@ -3,8 +3,40 @@
     "host": "http://127.0.0.1:11434",
     "timeout_seconds": 90
   },
-  "models": {
-    "main": "qwen3:30b",
-    "vision": "qwen2.5vl:7b"
+  "default_role": "main",
+  "main": {
+    "model": "qwen3:8b",
+    "num_ctx": 8192,
+    "temperature": 0.35,
+    "description": "Default fast reasoning and planning model"
+  },
+  "coder": {
+    "model": "qwen2.5-coder:14b-instruct-q3_K_M",
+    "fallback_model": "qwen2.5-coder:7b",
+    "num_ctx": 8192,
+    "temperature": 0.2,
+    "description": "Coding, app generation, code repair, project editing"
+  },
+  "vision": {
+    "model": "qwen2.5vl:7b",
+    "num_ctx": 4096,
+    "temperature": 0.1,
+    "description": "Screenshot and image understanding"
+  },
+  "router": {
+    "model": "granite3.3:2b",
+    "num_ctx": 2048,
+    "temperature": 0,
+    "description": "Fast intent classification and routing"
+  },
+  "embedding": {
+    "model": "nomic-embed-text",
+    "description": "Local embeddings for future memory search"
+  },
+  "quality_slow": {
+    "model": "qwen3:30b",
+    "num_ctx": 4096,
+    "temperature": 0.3,
+    "description": "Optional slow high-quality reasoning mode"
   }
 }

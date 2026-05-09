@@ -1,6 +1,7 @@
 {
   "app_name": "LocalPilot",
   "enable_gui": true,
+  "active_model_role": "main",
   "logs_dir": "logs",
   "memory_dir": "memory",
   "workspace_dir": "workspace",

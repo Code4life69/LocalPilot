@@ -24,22 +24,47 @@ cd C:\LocalPilot
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-ollama pull qwen3:30b
+ollama pull qwen3:8b
+ollama pull qwen2.5-coder:14b-instruct-q3_K_M
+ollama pull qwen2.5-coder:7b
 ollama pull qwen2.5vl:7b
+ollama pull granite3.3:2b
+ollama pull nomic-embed-text
 python localpilot.py
 ```
 
 ## Required Ollama Models
 
-- Main reasoning / chat model: `qwen3:30b`
-- Vision model: `qwen2.5vl:7b`
+- Main reasoning / chat role: `qwen3:8b`
+- Coder role: `qwen2.5-coder:14b-instruct-q3_K_M`
+- Coder fallback: `qwen2.5-coder:7b`
+- Vision role: `qwen2.5vl:7b`
+- Router role: `granite3.3:2b`
+- Embedding role: `nomic-embed-text`
 
-LocalPilot keeps reasoning/chat and visual analysis separate by default:
+Optional slow quality mode:
 
-- `qwen3:30b` handles planning, coding, chat, and tool decisions
+```powershell
+ollama pull qwen3:30b
+```
+
+LocalPilot keeps reasoning/chat, coding, and visual analysis separate by default:
+
+- `qwen3:8b` handles default planning, chat, and everyday reasoning
+- `qwen2.5-coder:14b-instruct-q3_K_M` handles coding and app generation
+- `qwen2.5-coder:7b` is the automatic coder fallback if the 14B coder model is missing
 - `qwen2.5vl:7b` is reserved for screenshots and visual inspection
+- `granite3.3:2b` is reserved for fast routing experiments
+- `nomic-embed-text` is reserved for future local memory search
+- `qwen3:30b` remains available as an optional slow high-quality mode and is not the default
 
 LocalPilot expects a reachable Ollama API, typically at `http://127.0.0.1:11434`.
+
+For this PC, a shorter Ollama keep-alive is recommended so one large model does not stay loaded too long:
+
+```powershell
+[Environment]::SetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "2m", "User")
+```
 
 ## How To Run
 
@@ -139,6 +164,8 @@ C:\LocalPilot
 - Stronger Windows UI Automation control actions
 - Better structured learned facts updates
 - Full multimodal Ollama verification for `qwen2.5vl:7b`
+- Add PaddleOCR later for screen text extraction
+- Add Whisper.cpp later for voice input
 
 ## First Roadmap
 

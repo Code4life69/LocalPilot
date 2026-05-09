@@ -2,8 +2,13 @@
   "name": "LocalPilot",
   "purpose": "A local Windows AI assistant with explicit modes, local memory, safe tool use, and optional GUI visibility.",
   "model_roles": {
-    "reasoning_chat": "qwen3:30b",
-    "vision": "qwen2.5vl:7b"
+    "main": "qwen3:8b",
+    "coder": "qwen2.5-coder:14b-instruct-q3_K_M",
+    "coder_fallback": "qwen2.5-coder:7b",
+    "vision": "qwen2.5vl:7b",
+    "router": "granite3.3:2b",
+    "embedding": "nomic-embed-text",
+    "quality_slow": "qwen3:30b"
   },
   "modes": [
     "chat",
@@ -65,6 +70,8 @@
   "todo": [
     "Verify end-to-end qwen2.5vl multimodal behavior with the installed Ollama build.",
     "Improve natural-language parsing for tool intents.",
-    "Expand GUI controls without adding background autonomy."
+    "Expand GUI controls without adding background autonomy.",
+    "Add PaddleOCR later for screen text extraction.",
+    "Add Whisper.cpp later for voice input."
   ]
 }
