@@ -57,6 +57,8 @@ class KeywordRouter:
 
     def classify(self, text: str) -> str:
         lowered = text.lower()
+        if self._looks_like_website_project_request(lowered):
+            return "code"
         if self._looks_like_code_project_request(lowered):
             return "code"
         if self._looks_like_code_tool_request(lowered):
@@ -91,6 +93,29 @@ class KeywordRouter:
         project_words = ("app", "program", "script", "calculator", "project")
         path_hint = ":\\" in lowered or " in c:\\" in lowered or "folder" in lowered
         return any(word in lowered for word in build_words) and any(word in lowered for word in project_words) and path_hint
+
+    def _looks_like_website_project_request(self, lowered: str) -> bool:
+        build_words = ("create", "build", "make", "generate", "scaffold")
+        website_words = (
+            "website",
+            "web site",
+            "web page",
+            "webpage",
+            "local website",
+            "local site",
+            "html css js",
+            "html css and javascript",
+            "html css javascript",
+        )
+        disqualifiers = (
+            "search the website",
+            "open this website",
+            "look up websites",
+            "websites about",
+        )
+        if any(phrase in lowered for phrase in disqualifiers):
+            return False
+        return any(word in lowered for word in build_words) and any(word in lowered for word in website_words)
 
     def _looks_like_code_tool_request(self, lowered: str) -> bool:
         return lowered.startswith(
