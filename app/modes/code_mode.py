@@ -65,6 +65,9 @@ class CodeMode:
         if app_kind and self._is_app_scaffold_request(lowered):
             return self._scaffold_gui_app(text, app_kind)
 
+        if self._looks_like_natural_file_create_request(lowered):
+            return self._handle_natural_file_create(text)
+
         if lowered.startswith("list ") or "list folder" in lowered or "list files" in lowered:
             path = self._extract_path(text) or "."
             return file_tools.list_folder(path)
@@ -129,6 +132,45 @@ class CodeMode:
 
         response = self.app.ollama.chat_with_role("coder", self.app.system_prompt, text)
         return {"ok": True, "message": response}
+
+    def _looks_like_natural_file_create_request(self, lowered: str) -> bool:
+        return (
+            any(phrase in lowered for phrase in ("create", "make", "write"))
+            and "file" in lowered
+            and any(phrase in lowered for phrase in ("named", "called"))
+            and any(phrase in lowered for phrase in ("that says", "with", "containing"))
+        )
+
+    def _handle_natural_file_create(self, text: str) -> dict:
+        parsed = self._parse_natural_file_create_request(text)
+        if not parsed:
+            return {"ok": False, "error": "Could not determine the file name and content for the file creation request."}
+        if parsed.get("error"):
+            return {"ok": False, "error": parsed["error"]}
+
+        target_path = parsed["path"]
+        content = parsed["content"]
+        if self.app.safety.requires_write_confirmation(target_path):
+            approved = self.app.ask_approval(f"Overwrite existing file?\n{target_path}")
+            if not approved:
+                return {"ok": False, "error": "Write cancelled by user."}
+
+        write_result = file_tools.write_file(str(target_path), content)
+        if not write_result.get("ok"):
+            return write_result
+
+        verification = file_tools.read_file(str(target_path))
+        if not verification.get("ok"):
+            return {"ok": False, "error": f"File write completed but verification failed for {target_path}."}
+        if verification.get("content") != content:
+            return {"ok": False, "error": f"File verification mismatch for {target_path}."}
+
+        return {
+            "ok": True,
+            "message": f"Created file: {target_path}",
+            "path": str(target_path),
+            "content": content,
+        }
 
     def _is_app_scaffold_request(self, lowered: str) -> bool:
         if not any(word in lowered for word in ("create", "build", "make")):
@@ -1249,3 +1291,64 @@ button.addEventListener("click", () => {{
             if lowered.startswith(prefix):
                 return text[len(prefix):].strip()
         return text.strip()
+
+    def _parse_natural_file_create_request(self, text: str) -> dict | None:
+        lowered = text.lower()
+        explicit_file_path = self._extract_explicit_file_path(text)
+        filename = None
+        if explicit_file_path:
+            target_path = explicit_file_path
+        else:
+            filename = self._extract_named_filename(text)
+            if not filename:
+                return None
+            base_dir = self._workspace_root()
+            target_path = base_dir / filename
+            if not target_path.resolve().is_relative_to(base_dir.resolve()):
+                return {"error": f"Refusing to write outside workspace without an explicit path: {target_path}"}
+
+        content = self._extract_file_content(text)
+        if content is None:
+            return None
+
+        if isinstance(target_path, dict):
+            return target_path
+        return {"path": target_path, "content": content}
+
+    def _extract_named_filename(self, text: str) -> str | None:
+        patterns = [
+            r'\b(?:named|called)\s+"?([^"\n]+?\.[A-Za-z0-9]+)"?(?:\s|$)',
+            r'\bfile\s+named\s+"?([^"\n]+?\.[A-Za-z0-9]+)"?(?:\s|$)',
+            r'\bfile\s+called\s+"?([^"\n]+?\.[A-Za-z0-9]+)"?(?:\s|$)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1).strip().rstrip(".,")
+        return None
+
+    def _extract_explicit_file_path(self, text: str) -> Path | None:
+        quoted = re.findall(r'"([^"]+)"', text)
+        for candidate in quoted:
+            if re.match(r"^[A-Za-z]:\\.+\.[A-Za-z0-9]+$", candidate):
+                return Path(candidate)
+        match = re.search(r"([A-Za-z]:\\[A-Za-z0-9_ .\\-]+\.[A-Za-z0-9]+)", text)
+        if match:
+            return Path(match.group(1).strip().rstrip(". "))
+        return None
+
+    def _extract_file_content(self, text: str) -> str | None:
+        patterns = [
+            r"\bthat says\s+(.+)$",
+            r"\bwith\s+(.+)$",
+            r"\bcontaining\s+(.+)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = match.group(1).strip()
+                return value.strip('"')
+        return None
+
+    def _workspace_root(self) -> Path:
+        return self.app.root_dir / "workspace"

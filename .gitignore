@@ -16,3 +16,6 @@ logs/*
 
 workspace/*
 !workspace/.gitkeep
+
+memory/*
+!memory/.gitkeep

@@ -96,6 +96,8 @@ LocalPilot keeps reasoning/chat, coding, and visual analysis separate by default
 
 LocalPilot expects a reachable Ollama API, typically at `http://127.0.0.1:11434`.
 
+Runtime memory stays local by default. `memory/notes.md` and `memory/learned_facts.json` are treated as runtime data, not tracked repo content. If you want to keep or share memory intentionally later, export it into `docs/` or a future `exports/` folder instead of autosyncing the live memory files.
+
 For this PC, a shorter Ollama keep-alive is recommended so one large model does not stay loaded too long:
 
 ```powershell

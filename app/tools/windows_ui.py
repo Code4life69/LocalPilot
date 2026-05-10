@@ -56,6 +56,26 @@ def list_visible_controls(max_depth: int = 2) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def get_control_at_point(x: int, y: int) -> dict:
+    try:
+        import uiautomation as auto
+
+        control = auto.ControlFromPoint(x, y)
+        if control is None:
+            return {"ok": False, "error": f"No control found at {x}, {y}.", "x": x, "y": y}
+        return {
+            "ok": True,
+            "x": x,
+            "y": y,
+            "name": getattr(control, "Name", ""),
+            "control_type": getattr(control, "ControlTypeName", ""),
+            "automation_id": getattr(control, "AutomationId", ""),
+            "bounds": _extract_bounds(control),
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "x": x, "y": y}
+
+
 def _get_foreground_control(auto):
     handle = auto.GetForegroundWindow()
     control = auto.ControlFromHandle(handle)

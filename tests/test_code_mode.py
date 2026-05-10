@@ -185,3 +185,40 @@ def test_website_verification_checks_asset_links(tmp_path):
 
     assert verification["ok"] is False
     assert "script.js link missing" in verification["error"]
+
+
+def test_natural_language_file_creation_creates_verified_workspace_file(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle(
+        {
+            "user_text": "create a text file in workspace named trust_test.txt that says LocalPilot file test"
+        }
+    )
+
+    target = tmp_path / "workspace" / "trust_test.txt"
+    assert result["ok"]
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "LocalPilot file test"
+    assert result["path"] == str(target)
+    assert "Created file:" in result["message"]
+
+
+def test_natural_language_file_creation_asks_before_overwrite(tmp_path):
+    app = DummyApp(tmp_path)
+    app.ask_approval = lambda prompt: False
+    mode = CodeMode(app)
+    target = tmp_path / "workspace" / "notes.txt"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("existing", encoding="utf-8")
+
+    result = mode.handle(
+        {
+            "user_text": "make a text file called notes.txt in workspace with hello world"
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "Write cancelled by user."
+    assert target.read_text(encoding="utf-8") == "existing"

@@ -35,6 +35,7 @@ class MemoryStore:
             return []
         lines = self.notes_path.read_text(encoding="utf-8").splitlines()
         matches: list[str] = []
+        seen: set[str] = set()
         for line in lines:
             normalized = line.strip()
             if not normalized or normalized.startswith("#"):
@@ -42,7 +43,9 @@ class MemoryStore:
             if needle not in normalized.lower():
                 continue
             cleaned = normalized.lstrip("-* ").strip()
-            if cleaned:
+            lowered_cleaned = cleaned.lower()
+            if cleaned and lowered_cleaned not in seen:
+                seen.add(lowered_cleaned)
                 matches.append(cleaned)
         return matches
 
