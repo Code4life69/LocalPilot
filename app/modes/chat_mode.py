@@ -51,6 +51,7 @@ class ChatMode:
             "- Answer the user's actual question directly.",
             "- For ordinary conversation, reply naturally in 1 to 3 sentences.",
             "- Do not introduce yourself unless the user asks who you are.",
+            "- Do not say you are just a virtual assistant unless the user directly asks about your nature.",
             "- Do not list modes, tools, safety rules, or capabilities unless the user asks about them.",
             "- Do not mention knowledge cutoff dates unless directly relevant.",
             "- Avoid bullet lists for casual chat.",
@@ -67,6 +68,7 @@ class ChatMode:
         return "\n".join(lines)
 
     def _looks_like_small_talk(self, lowered: str) -> bool:
+        normalized = lowered.strip(" .!?")
         exact_matches = {
             "how are you doing",
             "how are you",
@@ -76,7 +78,7 @@ class ChatMode:
             "whats up",
             "how have you been",
         }
-        if lowered in exact_matches:
+        if normalized in exact_matches:
             return True
         small_talk_fragments = (
             "rough day",
@@ -86,4 +88,4 @@ class ChatMode:
             "if i told you i was stuck",
             "what would you say if i told you",
         )
-        return any(fragment in lowered for fragment in small_talk_fragments)
+        return any(fragment in normalized for fragment in small_talk_fragments)

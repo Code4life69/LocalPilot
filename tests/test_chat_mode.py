@@ -88,5 +88,5 @@ def test_small_talk_prompt_adds_natural_style_rules(tmp_path):
 
     assert result["message"] == "small talk response"
     assert captured["role"] == "main"
-    assert "ordinary human conversation" in captured["system_prompt"]
+    assert "ordinary human conversation" in captured["system_prompt"].lower()
     assert "Do not pivot into a capabilities overview." in captured["system_prompt"]
