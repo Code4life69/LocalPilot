@@ -227,6 +227,7 @@ class OllamaClient:
         exact = self._find_installed_model_name(requested, available)
         requested_family = self._model_family(requested)
         requested_tag = self._model_tag(requested)
+        requested_family_normalized = self._normalize_model_family(requested_family)
         ranked: list[tuple[int, str]] = []
 
         for installed in available:
@@ -235,11 +236,13 @@ class OllamaClient:
             score = 0
             installed_family = self._model_family(installed)
             installed_tag = self._model_tag(installed)
+            installed_family_normalized = self._normalize_model_family(installed_family)
+
+            if not requested_family_normalized or installed_family_normalized != requested_family_normalized:
+                continue
 
             if installed_family == requested_family:
                 score += 5
-            elif requested_family and (requested_family in installed_family or installed_family in requested_family):
-                score += 2
 
             if requested_tag and installed_tag:
                 requested_prefix = requested_tag.split("-")[0]
@@ -459,6 +462,9 @@ class OllamaClient:
         if not model_name or ":" not in model_name:
             return ""
         return model_name.split(":", 1)[1].lower()
+
+    def _normalize_model_family(self, family: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", family.lower())
 
     def _performance_ctx_key(self, role: str) -> str | None:
         mapping = {
