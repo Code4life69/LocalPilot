@@ -13,7 +13,10 @@ def take_screenshot(output_dir: str) -> dict:
     folder = Path(output_dir)
     folder.mkdir(parents=True, exist_ok=True)
     filename = folder / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
-    with mss.MSS() as sct:
+    session_factory = getattr(mss, "MSS", None) or getattr(mss, "mss", None)
+    if session_factory is None:
+        return {"ok": False, "error": "mss does not expose MSS() or mss() on this installation."}
+    with session_factory() as sct:
         sct.shot(output=str(filename))
     return {"ok": True, "path": str(filename)}
 
