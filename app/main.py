@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import queue
@@ -777,10 +778,27 @@ def run_cli(app: LocalPilotApp) -> None:
         safe_console_print(f"\nLocalPilot> {format_result(request['result'])}")
 
 
-def main() -> int:
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="localpilot.py", add_help=True)
+    parser.add_argument(
+        "--model-status",
+        action="store_true",
+        help="Print model role status and exit without starting the GUI.",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_arg_parser().parse_args(argv)
     root_dir = Path(__file__).resolve().parent.parent
     app = LocalPilotApp(root_dir)
     atexit.register(app.shutdown)
+
+    if args.model_status:
+        safe_console_print(app.describe_model_status())
+        app.shutdown()
+        return 0
+
     enable_gui = bool(app.settings.get("enable_gui", True))
 
     if enable_gui:

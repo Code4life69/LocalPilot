@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+from app import main as main_module
 from app.main import LocalPilotApp, LocalPilotGUI, format_result
 
 
@@ -66,3 +67,26 @@ def test_negative_followup_cancels_pending_task():
     assert request["mode"] == "code"
     assert request["result"]["error"] == "Pending task cancelled by user."
     assert app.pending_followup is None
+
+
+def test_main_model_status_flag_prints_without_gui(monkeypatch):
+    calls = {"shutdown": False, "output": []}
+
+    class FakeApp:
+        def __init__(self, root_dir):
+            self.root_dir = root_dir
+
+        def describe_model_status(self):
+            return "Model status\n- Ollama reachable: no"
+
+        def shutdown(self):
+            calls["shutdown"] = True
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", FakeApp)
+    monkeypatch.setattr(main_module, "safe_console_print", lambda text="": calls["output"].append(text))
+
+    exit_code = main_module.main(["--model-status"])
+
+    assert exit_code == 0
+    assert calls["shutdown"] is True
+    assert calls["output"] == ["Model status\n- Ollama reachable: no"]

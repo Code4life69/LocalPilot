@@ -53,3 +53,21 @@ def test_model_status_report_handles_ollama_unavailable():
     assert "Model status" in report
     assert "- Ollama reachable: no" in report
     assert "main: preferred=qwen3:8b" in report
+
+
+def test_model_status_report_marks_missing_models_without_crashing():
+    profiles = load_model_profiles()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["qwen3:8b", "qwen2.5vl:7b"]
+
+    report = client.build_model_status_report(default_role="main")
+
+    assert "- Ollama reachable: yes" in report
+    assert "coder: preferred=qwen2.5-coder:14b-instruct-q3_K_M [missing]" in report
+    assert "router: preferred=granite3.3:2b [missing]" in report

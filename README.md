@@ -33,6 +33,18 @@ ollama pull nomic-embed-text
 python localpilot.py
 ```
 
+Recommended install:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_recommended_models.ps1
+```
+
+Model check:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/check_models.ps1
+```
+
 ## Required Ollama Models
 
 - Main reasoning / chat role: `qwen3:8b`
