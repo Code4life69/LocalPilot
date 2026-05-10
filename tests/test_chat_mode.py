@@ -90,3 +90,21 @@ def test_small_talk_prompt_adds_natural_style_rules(tmp_path):
     assert captured["role"] == "main"
     assert "ordinary human conversation" in captured["system_prompt"].lower()
     assert "Do not pivot into a capabilities overview." in captured["system_prompt"]
+
+
+def test_chat_mode_strips_emoji_when_user_did_not_use_any(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "status",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "I'm doing well! 😊"),
+        system_prompt="base system prompt",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "How are you doing?"})
+
+    assert result["message"] == "I'm doing well!"

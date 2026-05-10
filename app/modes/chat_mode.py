@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 
 class ChatMode:
@@ -35,6 +36,8 @@ class ChatMode:
                 "message": self.app.describe_model_status(),
             }
         response = self.app.ollama.chat_with_role("main", self._build_chat_prompt(lowered), text)
+        if not self._user_used_emoji(text):
+            response = self._strip_simple_emoji(response)
         return {"ok": True, "message": response}
 
     def _load_trust_checklist(self) -> str:
@@ -52,6 +55,7 @@ class ChatMode:
             "- For ordinary conversation, reply naturally in 1 to 3 sentences.",
             "- Do not introduce yourself unless the user asks who you are.",
             "- Do not say you are just a virtual assistant unless the user directly asks about your nature.",
+            "- Do not claim personal experiences, memories, or preferences you do not actually have.",
             "- Do not list modes, tools, safety rules, or capabilities unless the user asks about them.",
             "- Do not mention knowledge cutoff dates unless directly relevant.",
             "- Avoid bullet lists for casual chat.",
@@ -89,3 +93,11 @@ class ChatMode:
             "what would you say if i told you",
         )
         return any(fragment in normalized for fragment in small_talk_fragments)
+
+    def _user_used_emoji(self, text: str) -> bool:
+        return bool(re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", text))
+
+    def _strip_simple_emoji(self, text: str) -> str:
+        cleaned = re.sub(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", "", text)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        return cleaned.strip()
