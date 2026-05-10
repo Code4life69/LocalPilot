@@ -49,6 +49,8 @@ class LocalPilotApp:
             performance_profile=self._selected_performance_profile(),
             performance_profile_name=self._active_performance_profile_name(),
             lifecycle_settings=self.settings.get("model_lifecycle", {}),
+            debug_views_dir=self.root_dir / "workspace" / "debug_views",
+            log_event_callback=self.logger.event,
         )
         self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
@@ -146,6 +148,9 @@ class LocalPilotApp:
 
     def describe_model_warmup(self) -> str:
         return self.ollama.build_model_warmup_report()
+
+    def describe_vision_test(self) -> str:
+        return self.ollama.build_vision_test_report()
 
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
@@ -830,6 +835,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print model doctor diagnostics and exit without starting the GUI.",
     )
+    parser.add_argument(
+        "--vision-test",
+        action="store_true",
+        help="Run a minimal vision probe and exit without starting the GUI.",
+    )
     return parser
 
 
@@ -846,6 +856,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.model_doctor:
         safe_console_print(app.describe_model_doctor())
+        app.shutdown()
+        return 0
+
+    if args.vision_test:
+        safe_console_print(app.describe_vision_test())
         app.shutdown()
         return 0
 

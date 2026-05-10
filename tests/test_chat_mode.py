@@ -142,6 +142,30 @@ def test_model_repair_plan_command_returns_status_text(tmp_path):
     assert "Model repair plan" in result["message"]
 
 
+def test_vision_test_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "unused",
+        describe_model_doctor=lambda: "unused",
+        describe_model_repair_plan=lambda: "unused",
+        describe_model_unload=lambda: "unused",
+        describe_model_warmup=lambda: "unused",
+        describe_vision_test=lambda: "Vision test\nVision unavailable: Ollama is not running.",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "vision test"})
+
+    assert result["ok"]
+    assert "Vision test" in result["message"]
+
+
 def test_chat_mode_uses_main_role_for_llm_calls(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)

@@ -113,3 +113,26 @@ def test_main_model_doctor_flag_prints_without_gui(monkeypatch):
     assert exit_code == 0
     assert calls["shutdown"] is True
     assert calls["output"] == ["Model doctor\n- Ollama reachable: no"]
+
+
+def test_main_vision_test_flag_prints_without_gui(monkeypatch):
+    calls = {"shutdown": False, "output": []}
+
+    class FakeApp:
+        def __init__(self, root_dir):
+            self.root_dir = root_dir
+
+        def describe_vision_test(self):
+            return "Vision test\nVision unavailable: Ollama is not running."
+
+        def shutdown(self):
+            calls["shutdown"] = True
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", FakeApp)
+    monkeypatch.setattr(main_module, "safe_console_print", lambda text="": calls["output"].append(text))
+
+    exit_code = main_module.main(["--vision-test"])
+
+    assert exit_code == 0
+    assert calls["shutdown"] is True
+    assert calls["output"] == ["Vision test\nVision unavailable: Ollama is not running."]

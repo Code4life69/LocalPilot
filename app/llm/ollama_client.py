@@ -5,10 +5,12 @@ import os
 import re
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import requests
+from PIL import Image, ImageDraw
 
 
 class OllamaClient:
@@ -41,6 +43,8 @@ class OllamaClient:
         performance_profile: dict[str, Any] | None = None,
         performance_profile_name: str = "rtx3060_balanced",
         lifecycle_settings: dict[str, Any] | None = None,
+        debug_views_dir: str | Path | None = None,
+        log_event_callback: Callable[..., Any] | None = None,
     ) -> None:
         self.host = host.rstrip("/")
         self.timeout_seconds = timeout_seconds
@@ -48,6 +52,9 @@ class OllamaClient:
         self.performance_profile = dict(performance_profile or {})
         self.performance_profile_name = performance_profile_name
         self.lifecycle_settings = self._normalize_lifecycle_settings(lifecycle_settings or {})
+        self.debug_views_dir = Path(debug_views_dir or Path("workspace") / "debug_views")
+        self.debug_views_dir.mkdir(parents=True, exist_ok=True)
+        self.log_event_callback = log_event_callback
         self.model_profiles = {
             key: value
             for key, value in model_profiles.items()
@@ -59,6 +66,14 @@ class OllamaClient:
         self.last_status = "unknown"
         self.last_role_used: str | None = None
         self.last_heavy_role_used: str | None = None
+
+    def _log_event(self, role: str, message: str, **extra: Any) -> None:
+        if self.log_event_callback is None:
+            return
+        try:
+            self.log_event_callback(role, message, **extra)
+        except Exception:
+            return
 
     def _normalize_lifecycle_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
         normalized = {
@@ -480,6 +495,236 @@ class OllamaClient:
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7ZxY4AAAAASUVORK5CYII="
         )
 
+    def create_vision_test_image(self) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = self.debug_views_dir / f"vision_test_{timestamp}.png"
+        image = Image.new("RGB", (96, 96), "#1f2935")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((8, 8, 40, 40), fill="#61b0ff")
+        draw.rectangle((56, 8, 88, 40), fill="#6fd3a5")
+        draw.rectangle((20, 56, 76, 84), fill="#ffb86b")
+        image.save(output_path, format="PNG")
+        return output_path
+
+    def preprocess_vision_image(
+        self,
+        image_path: str | Path,
+        request_mode: str,
+        max_width: int = 1280,
+    ) -> dict[str, Any]:
+        source_path = Path(image_path)
+        with Image.open(source_path) as image:
+            original_mode = image.mode
+            original_size = image.size
+            prepared = image.convert("RGB")
+            if prepared.width > max_width:
+                new_height = max(1, int(prepared.height * (max_width / prepared.width)))
+                prepared = prepared.resize((max_width, new_height))
+            processed_size = prepared.size
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            output_path = self.debug_views_dir / f"{source_path.stem}_{request_mode}_{timestamp}.png"
+            prepared.save(output_path, format="PNG")
+
+        return {
+            "source_path": source_path,
+            "processed_path": output_path,
+            "original_size": original_size,
+            "processed_size": processed_size,
+            "original_mode": original_mode,
+            "processed_mode": "RGB",
+        }
+
+    def _extract_vision_text(self, data: dict[str, Any]) -> str:
+        message = data.get("message")
+        if isinstance(message, dict):
+            content = message.get("content", "")
+            if isinstance(content, str):
+                return content.strip()
+        response_text = data.get("response", "")
+        if isinstance(response_text, str):
+            return response_text.strip()
+        return ""
+
+    def _format_vision_diagnostic(self, diagnostic: dict[str, Any]) -> str:
+        lines = [
+            "Vision unavailable: request failed.",
+            f"- endpoint: {diagnostic.get('endpoint', 'n/a')}",
+            f"- model: {diagnostic.get('model', 'n/a')}",
+            f"- image path: {diagnostic.get('image_path', 'n/a')}",
+            f"- image size: {diagnostic.get('image_size', 'n/a')}",
+            f"- request mode: {diagnostic.get('request_mode', 'n/a')}",
+        ]
+        if diagnostic.get("response_status") is not None:
+            lines.append(f"- response status: {diagnostic.get('response_status')}")
+        if diagnostic.get("response_body"):
+            lines.append(f"- response body: {diagnostic.get('response_body')}")
+        if diagnostic.get("exception"):
+            lines.append(f"- exception: {diagnostic.get('exception')}")
+        return "\n".join(lines)
+
+    def _run_vision_request(
+        self,
+        prompt: str,
+        image_path: str | Path,
+        request_mode: str,
+        num_predict: int = 64,
+        max_width: int = 1280,
+    ) -> dict[str, Any]:
+        image_file = Path(image_path)
+        if not image_file.exists():
+            diagnostic = {
+                "endpoint": "n/a",
+                "model": "n/a",
+                "image_path": str(image_file),
+                "image_size": "n/a",
+                "request_mode": request_mode,
+                "response_status": None,
+                "response_body": "",
+                "exception": f"Image not found: {image_file}",
+            }
+            return {"ok": False, "diagnostic": diagnostic, "error": self._format_vision_diagnostic(diagnostic)}
+
+        if not self.is_server_available():
+            return {
+                "ok": False,
+                "error": f"Vision unavailable: {self.build_unavailable_message(auto_start_attempted=False)}",
+            }
+
+        self._prepare_role_activation("vision")
+        available = self.list_models()
+        model_name = self.resolve_model_for_role("vision", available)
+        self.active_models["vision"] = model_name
+        self.active_vision_model = model_name
+        self.last_role_used = "vision"
+        if not model_name:
+            preferred = self.model_profiles.get("vision", {}).get("model", "vision model")
+            return {"ok": False, "error": f"Vision unavailable: model `{preferred}` is not installed.\nRun: ollama pull {preferred}"}
+
+        preprocessing = self.preprocess_vision_image(image_file, request_mode=request_mode, max_width=max_width)
+        processed_path = Path(preprocessing["processed_path"])
+        encoded = base64.b64encode(processed_path.read_bytes()).decode("ascii")
+        vision_profile = self.get_profile("vision")
+        options = {
+            "num_ctx": vision_profile.get("num_ctx", 4096),
+            "temperature": vision_profile.get("temperature", 0.1),
+            "num_predict": num_predict,
+        }
+
+        attempts = [
+            (
+                f"{self.host}/api/chat",
+                {
+                    "model": model_name,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt,
+                            "images": [encoded],
+                        }
+                    ],
+                    "stream": False,
+                    "options": options,
+                },
+                "chat_messages_with_images",
+            ),
+            (
+                f"{self.host}/api/generate",
+                {
+                    "model": model_name,
+                    "prompt": prompt,
+                    "images": [encoded],
+                    "stream": False,
+                    "options": options,
+                },
+                "generate_images",
+            ),
+        ]
+        if vision_profile.get("keep_alive"):
+            for _, payload, _ in attempts:
+                payload["keep_alive"] = vision_profile["keep_alive"]
+
+        last_diagnostic: dict[str, Any] | None = None
+        for endpoint, payload, attempt_mode in attempts:
+            try:
+                response = requests.post(
+                    endpoint,
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
+                if response.ok:
+                    data = response.json()
+                    text = self._extract_vision_text(data)
+                    self.last_heavy_role_used = "vision"
+                    if text:
+                        self._log_event(
+                            "Vision",
+                            f"Vision request succeeded via {attempt_mode}",
+                            endpoint=endpoint,
+                            model=model_name,
+                            image_path=str(processed_path),
+                            request_mode=attempt_mode,
+                        )
+                        return {
+                            "ok": True,
+                            "model": model_name,
+                            "endpoint": endpoint,
+                            "request_mode": attempt_mode,
+                            "image_path": str(processed_path),
+                            "image_size": preprocessing["processed_size"],
+                            "preprocessing": preprocessing,
+                            "text": text,
+                            "response": data,
+                            "eval_count": int(data.get("eval_count") or 0),
+                            "eval_duration": int(data.get("eval_duration") or 0),
+                            "load_duration": int(data.get("load_duration") or 0),
+                        }
+                    last_diagnostic = {
+                        "endpoint": endpoint,
+                        "model": model_name,
+                        "image_path": str(processed_path),
+                        "image_size": preprocessing["processed_size"],
+                        "request_mode": attempt_mode,
+                        "response_status": response.status_code,
+                        "response_body": response.text[:400],
+                        "exception": "Vision call returned no text.",
+                    }
+                else:
+                    last_diagnostic = {
+                        "endpoint": endpoint,
+                        "model": model_name,
+                        "image_path": str(processed_path),
+                        "image_size": preprocessing["processed_size"],
+                        "request_mode": attempt_mode,
+                        "response_status": response.status_code,
+                        "response_body": response.text[:400],
+                        "exception": "",
+                    }
+            except Exception as exc:
+                response = getattr(exc, "response", None)
+                last_diagnostic = {
+                    "endpoint": endpoint,
+                    "model": model_name,
+                    "image_path": str(processed_path),
+                    "image_size": preprocessing["processed_size"],
+                    "request_mode": attempt_mode,
+                    "response_status": getattr(response, "status_code", None),
+                    "response_body": (getattr(response, "text", "") or "")[:400],
+                    "exception": str(exc),
+                }
+
+        diagnostic = last_diagnostic or {
+            "endpoint": f"{self.host}/api/chat",
+            "model": model_name,
+            "image_path": str(processed_path),
+            "image_size": preprocessing["processed_size"],
+            "request_mode": request_mode,
+            "response_status": None,
+            "response_body": "",
+            "exception": "Unknown vision failure.",
+        }
+        self._log_event("Vision", "Vision request failed", **diagnostic)
+        return {"ok": False, "diagnostic": diagnostic, "error": self._format_vision_diagnostic(diagnostic)}
+
     def _known_localpilot_model_names(self, available: list[str]) -> set[str]:
         names: set[str] = set()
         for profile in self.model_profiles.values():
@@ -603,58 +848,52 @@ class OllamaClient:
             return f"Ollama chat request failed for role `{role}`: {exc}"
 
     def analyze_screenshot(self, prompt: str, image_path: str | Path) -> str:
-        image_file = Path(image_path)
-        if not image_file.exists():
-            return f"Image not found: {image_file}"
+        result = self._run_vision_request(
+            prompt=prompt,
+            image_path=image_path,
+            request_mode="analyze_screenshot",
+            num_predict=96,
+            max_width=1600,
+        )
+        if result.get("ok"):
+            return str(result.get("text", "")).strip() or "Vision call returned no text."
+        return str(result.get("error", "Vision unavailable."))
 
-        if not self.is_server_available():
-            return self.build_unavailable_message(auto_start_attempted=False)
+    def build_vision_test_report(self) -> str:
+        test_image = self.create_vision_test_image()
+        result = self._run_vision_request(
+            prompt="Describe this image in one sentence.",
+            image_path=test_image,
+            request_mode="vision_test",
+            num_predict=24,
+            max_width=512,
+        )
 
-        self._prepare_role_activation("vision")
-        available = self.list_models()
-        model_name = self.resolve_model_for_role("vision", available)
-        self.active_models["vision"] = model_name
-        self.active_vision_model = model_name
-        self.last_role_used = "vision"
-        if not model_name:
-            preferred = self.model_profiles.get("vision", {}).get("model", "vision model")
-            return f"Vision model `{preferred}` is not installed yet.\nRun: ollama pull {preferred}"
+        lines = ["Vision test", f"- test image: {test_image}"]
+        if not result.get("ok"):
+            lines.append(str(result.get("error", "Vision unavailable.")))
+            return "\n".join(lines)
 
-        try:
-            encoded = base64.b64encode(image_file.read_bytes()).decode("ascii")
-            payload: dict[str, Any] = {
-                "model": model_name,
-                "prompt": prompt,
-                "images": [encoded],
-                "stream": False,
-                "options": {
-                    "num_ctx": self.model_profiles.get("vision", {}).get("num_ctx", 4096),
-                    "temperature": self.model_profiles.get("vision", {}).get("temperature", 0.1),
-                },
-            }
-            vision_profile = self.get_profile("vision")
-            if vision_profile.get("keep_alive"):
-                payload["keep_alive"] = vision_profile["keep_alive"]
-            response = requests.post(
-                f"{self.host}/api/generate",
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
-            response.raise_for_status()
-            data = response.json()
-            text = data.get("response", "").strip()
-            self.last_heavy_role_used = "vision"
-            if text:
-                return text
-            return (
-                "Vision call returned no text. TODO: verify the installed Ollama multimodal API "
-                f"shape for {model_name}."
-            )
-        except Exception as exc:
-            return (
-                "Vision analysis placeholder reached. TODO: verify qwen2.5-vl multimodal Ollama "
-                f"request handling. Error: {exc}"
-            )
+        load_seconds = result.get("load_duration", 0) / 1_000_000_000 if result.get("load_duration") else 0
+        eval_count = int(result.get("eval_count") or 0)
+        eval_duration = int(result.get("eval_duration") or 0)
+        tokens_per_second = None
+        if eval_count > 0 and eval_duration > 0:
+            tokens_per_second = eval_count / (eval_duration / 1_000_000_000)
+
+        lines.extend(
+            [
+                f"- model: {result.get('model')}",
+                f"- endpoint: {result.get('endpoint')}",
+                f"- request mode: {result.get('request_mode')}",
+                f"- processed image: {result.get('image_path')}",
+                f"- processed size: {result.get('image_size')}",
+                f"- response: {result.get('text')}",
+                f"- load: {load_seconds:.2f}s",
+                f"- tps: {f'{tokens_per_second:.2f}' if tokens_per_second is not None else 'n/a'}",
+            ]
+        )
+        return "\n".join(lines)
 
     def embed_text(self, text: str) -> dict[str, Any]:
         if not self.is_server_available():
@@ -859,6 +1098,30 @@ class OllamaClient:
             )
             if self.is_heavy_role("coder" if role == "coder_fallback" else role):
                 self.last_heavy_role_used = "coder" if role == "coder_fallback" else role
+
+        vision_image = self.create_vision_test_image()
+        vision_result = self._run_vision_request(
+            prompt="Describe this image in one sentence.",
+            image_path=vision_image,
+            request_mode="vision_benchmark",
+            num_predict=24,
+            max_width=512,
+        )
+        if not vision_result.get("ok"):
+            lines.append(f"- vision: warning -> {vision_result.get('error', 'unknown vision benchmark failure')}")
+        else:
+            load_seconds = vision_result.get("load_duration", 0) / 1_000_000_000 if vision_result.get("load_duration") else 0
+            eval_count = int(vision_result.get("eval_count") or 0)
+            eval_duration = int(vision_result.get("eval_duration") or 0)
+            tps = None
+            if eval_count > 0 and eval_duration > 0:
+                tps = eval_count / (eval_duration / 1_000_000_000)
+            lines.append(
+                f"- vision: model={vision_result.get('model')}, "
+                f"tps={f'{tps:.2f}' if tps is not None else 'n/a'}, "
+                f"load={load_seconds:.2f}s, "
+                f"eval_tokens={eval_count}"
+            )
         if self.lifecycle_enabled() and self.is_heavy_role(default_role):
             self.unload_all_non_current_models(default_role)
         return "\n".join(lines)

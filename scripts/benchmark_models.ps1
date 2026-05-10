@@ -1,7 +1,15 @@
 $ErrorActionPreference = "Stop"
 
 $hostUrl = "http://127.0.0.1:11434"
-$visionPixel = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+i2ioAAAAASUVORK5CYII="
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$projectRoot = Split-Path -Parent $scriptRoot
+$venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+
+if (Test-Path $venvPython) {
+    $pythonExe = $venvPython
+} else {
+    $pythonExe = "python"
+}
 
 function Test-OllamaReachable {
     try {
@@ -34,41 +42,6 @@ function Invoke-TextBenchmark {
         options = @{
             num_ctx = $NumCtx
             temperature = $Temperature
-        }
-    } | ConvertTo-Json -Depth 6
-
-    try {
-        $response = Invoke-RestMethod -Uri "$hostUrl/api/generate" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 180
-        [PSCustomObject]@{
-            ok = $true
-            model = $Model
-            eval_count = [int]($response.eval_count | ForEach-Object { $_ } | Select-Object -First 1)
-            eval_duration = [long]($response.eval_duration | ForEach-Object { $_ } | Select-Object -First 1)
-            load_duration = [long]($response.load_duration | ForEach-Object { $_ } | Select-Object -First 1)
-            tokens_per_second = Get-TokensPerSecond -evalCount $response.eval_count -evalDuration $response.eval_duration
-        }
-    } catch {
-        [PSCustomObject]@{
-            ok = $false
-            model = $Model
-            error = $_.Exception.Message
-        }
-    }
-}
-
-function Invoke-VisionBenchmark {
-    param(
-        [string]$Model
-    )
-
-    $body = @{
-        model = $Model
-        prompt = "Describe this tiny test image in one short sentence."
-        images = @($visionPixel)
-        stream = $false
-        options = @{
-            num_ctx = 4096
-            temperature = 0.1
         }
     } | ConvertTo-Json -Depth 6
 
@@ -127,8 +100,7 @@ foreach ($entry in $textBenchmarks) {
 }
 
 Write-Host "Vision benchmark (best effort)..." -ForegroundColor Cyan
-$visionResult = Invoke-VisionBenchmark -Model "qwen2.5vl:7b"
-Show-BenchmarkResult -Result $visionResult -Label "vision"
+& $pythonExe (Join-Path $projectRoot "localpilot.py") --vision-test
 
 Write-Host ""
 Write-Host "ollama ps" -ForegroundColor Cyan

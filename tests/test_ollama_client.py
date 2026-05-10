@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from PIL import Image
+
 from app.llm.ollama_client import OllamaClient
 
 
@@ -137,6 +139,25 @@ def test_model_benchmark_report_handles_ollama_unavailable():
     assert "Ollama is unavailable" in report
 
 
+def test_vision_test_report_handles_ollama_unavailable():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=Path("workspace") / "debug_views",
+    )
+    client.is_server_available = lambda: False
+
+    report = client.build_vision_test_report()
+
+    assert "Vision test" in report
+    assert "Vision unavailable" in report
+
+
 def test_model_benchmark_report_warns_when_models_are_missing():
     profiles = load_model_profiles()
     client = OllamaClient(
@@ -169,6 +190,86 @@ def test_model_benchmark_report_warns_when_models_are_missing():
     assert "main: model=qwen3:8b" in report
     assert "coder: warning -> Model missing: qwen2.5-coder:14b-instruct-q3_K_M" in report
     assert "router: warning -> Model missing: granite3.3:2b" in report
+
+
+def test_preprocess_vision_image_creates_smaller_rgb_image(tmp_path):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    source_image = tmp_path / "source.png"
+    Image.new("RGBA", (2400, 1200), (10, 20, 30, 255)).save(source_image)
+
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+
+    result = client.preprocess_vision_image(source_image, request_mode="unit_test", max_width=1280)
+
+    assert result["original_mode"] == "RGBA"
+    assert result["processed_mode"] == "RGB"
+    assert result["processed_size"][0] == 1280
+    assert result["processed_size"][0] < result["original_size"][0]
+    assert Path(result["processed_path"]).exists()
+
+
+def test_analyze_screenshot_returns_readable_error_instead_of_throwing(tmp_path):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    image_path = tmp_path / "vision_input.png"
+    Image.new("RGB", (64, 64), (20, 30, 40)).save(image_path)
+
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client._run_vision_request = lambda **kwargs: {
+        "ok": False,
+        "error": "Vision unavailable: request failed.\n- response status: 500",
+    }
+
+    result = client.analyze_screenshot("Describe this screenshot.", image_path)
+
+    assert "Vision unavailable" in result
+    assert "500" in result
+
+
+def test_model_benchmark_report_handles_vision_failure_gracefully(tmp_path):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["qwen3:8b", "qwen2.5-coder:14b-instruct-q3_K_M", "qwen2.5-coder:7b", "granite3.3:2b", "qwen2.5vl:7b"]
+    client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: {
+        "ok": True,
+        "model": model_name,
+        "eval_count": 20,
+        "eval_duration": 1_000_000_000,
+        "load_duration": 100_000_000,
+        "tokens_per_second": 20.0,
+    }
+    client._run_vision_request = lambda **kwargs: {
+        "ok": False,
+        "error": "Vision unavailable: request failed.\n- response status: 500",
+    }
+
+    report = client.build_model_benchmark_report(default_role="main", performance_profile_name="rtx3060_balanced")
+
+    assert "vision: warning -> Vision unavailable" in report
 
 
 def test_model_unload_report_handles_ollama_unavailable():

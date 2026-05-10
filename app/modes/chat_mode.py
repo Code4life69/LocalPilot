@@ -50,6 +50,11 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_model_repair_plan(),
             }
+        if lowered == "vision test":
+            return {
+                "ok": True,
+                "message": self.app.describe_vision_test(),
+            }
         if lowered == "model unload":
             return {
                 "ok": True,
