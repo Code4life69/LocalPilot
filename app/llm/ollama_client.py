@@ -132,10 +132,12 @@ class OllamaClient:
         available = self.list_models() if available is None else available
         preferred = profile.get("model")
         fallback = profile.get("fallback_model")
-        if preferred in available:
-            return preferred
-        if fallback in available:
-            return fallback
+        preferred_match = self._find_installed_model_name(preferred, available)
+        if preferred_match:
+            return preferred_match
+        fallback_match = self._find_installed_model_name(fallback, available)
+        if fallback_match:
+            return fallback_match
         return None
 
     def get_profile(self, role: str) -> dict[str, Any]:
@@ -145,13 +147,24 @@ class OllamaClient:
         if available is None and not self.is_server_available():
             return None
         available = self.list_models() if available is None else available
-        return model_name in available
+        return self._find_installed_model_name(model_name, available) is not None
 
     def current_model_for_role(self, role: str) -> str | None:
         if not self.is_server_available():
             return None
         self.resolve_models()
         return self.active_models.get(role)
+
+    def _find_installed_model_name(self, requested: str | None, available: list[str]) -> str | None:
+        if not requested:
+            return None
+        candidates = [requested]
+        if ":" not in requested:
+            candidates.append(f"{requested}:latest")
+        for candidate in candidates:
+            if candidate in available:
+                return candidate
+        return None
 
     def _server_ready_message(self, prefix: str) -> str:
         role_notes = []

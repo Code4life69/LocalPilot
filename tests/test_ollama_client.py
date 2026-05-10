@@ -38,6 +38,23 @@ def test_coder_role_falls_back_when_primary_missing():
     assert resolved == "qwen2.5-coder:7b"
 
 
+def test_tagless_model_name_resolves_latest_variant():
+    profiles = load_model_profiles()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+    )
+
+    resolved = client.resolve_model_for_role(
+        "embedding",
+        available=["nomic-embed-text:latest"],
+    )
+
+    assert resolved == "nomic-embed-text:latest"
+
+
 def test_model_status_report_handles_ollama_unavailable():
     profiles = load_model_profiles()
     client = OllamaClient(
