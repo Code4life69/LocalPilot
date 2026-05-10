@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -30,12 +31,14 @@ class OllamaClient:
         default_role: str = "main",
         performance_profile: dict[str, Any] | None = None,
         performance_profile_name: str = "rtx3060_balanced",
+        lifecycle_settings: dict[str, Any] | None = None,
     ) -> None:
         self.host = host.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.default_role = default_role
         self.performance_profile = dict(performance_profile or {})
         self.performance_profile_name = performance_profile_name
+        self.lifecycle_settings = self._normalize_lifecycle_settings(lifecycle_settings or {})
         self.model_profiles = {
             key: value
             for key, value in model_profiles.items()
@@ -46,6 +49,18 @@ class OllamaClient:
         self.active_vision_model: str | None = self.model_profiles.get("vision", {}).get("model")
         self.last_status = "unknown"
         self.last_role_used: str | None = None
+        self.last_heavy_role_used: str | None = None
+
+    def _normalize_lifecycle_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        normalized = {
+            "enabled": True,
+            "unload_previous_heavy_role": True,
+            "keep_lightweight_roles_loaded": True,
+            "heavy_roles": ["main", "coder", "vision", "quality_slow"],
+        }
+        normalized.update(settings)
+        normalized["heavy_roles"] = list(normalized.get("heavy_roles") or [])
+        return normalized
 
     def is_server_available(self) -> bool:
         try:
@@ -163,6 +178,12 @@ class OllamaClient:
             profile["keep_alive"] = self.performance_profile["keep_alive"]
         return profile
 
+    def lifecycle_enabled(self) -> bool:
+        return bool(self.lifecycle_settings.get("enabled", True))
+
+    def is_heavy_role(self, role: str | None) -> bool:
+        return bool(role and role in set(self.lifecycle_settings.get("heavy_roles", [])))
+
     def is_model_installed(self, model_name: str, available: list[str] | None = None) -> bool | None:
         if available is None and not self.is_server_available():
             return None
@@ -174,6 +195,179 @@ class OllamaClient:
             return None
         self.resolve_models()
         return self.active_models.get(role)
+
+    def get_loaded_models(self) -> list[dict[str, Any]]:
+        if not self.is_server_available():
+            return []
+
+        try:
+            response = requests.get(f"{self.host}/api/ps", timeout=5)
+            if response.ok:
+                data = response.json()
+                models = []
+                for item in data.get("models", []):
+                    name = item.get("name") or item.get("model")
+                    if name:
+                        models.append({"name": name, "details": item})
+                return models
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ["ollama", "ps"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode != 0:
+                return []
+            models: list[dict[str, Any]] = []
+            lines = [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+            for line in lines[1:]:
+                parts = re.split(r"\s{2,}", line.strip())
+                if parts:
+                    models.append({"name": parts[0], "raw": line.strip()})
+            return models
+        except Exception:
+            return []
+
+    def unload_model(self, model_name: str) -> dict[str, Any]:
+        if not model_name:
+            return {"ok": False, "error": "No model name was provided for unload."}
+        if not self.is_server_available():
+            return {"ok": False, "error": self.build_unavailable_message(auto_start_attempted=False), "model": model_name}
+
+        loaded_before = {item.get("name") for item in self.get_loaded_models()}
+        if model_name not in loaded_before:
+            return {"ok": True, "model": model_name, "detail": "Model was not loaded.", "method": "noop"}
+
+        payload = {
+            "model": model_name,
+            "prompt": "release",
+            "stream": False,
+            "keep_alive": 0,
+            "options": {
+                "num_ctx": 32,
+                "temperature": 0,
+            },
+        }
+        try:
+            response = requests.post(
+                f"{self.host}/api/generate",
+                json=payload,
+                timeout=min(self.timeout_seconds, 20),
+            )
+            response.raise_for_status()
+            time.sleep(0.5)
+            loaded_after_api = {item.get("name") for item in self.get_loaded_models()}
+            if model_name not in loaded_after_api:
+                return {"ok": True, "model": model_name, "detail": "Unloaded via Ollama API.", "method": "api"}
+        except Exception:
+            pass
+
+        try:
+            result = subprocess.run(
+                ["ollama", "stop", model_name],
+                capture_output=True,
+                text=True,
+                timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            loaded_after_cli = {item.get("name") for item in self.get_loaded_models()}
+            if model_name not in loaded_after_cli:
+                return {"ok": True, "model": model_name, "detail": "Unloaded via ollama stop.", "method": "cli"}
+            error_text = (result.stderr or result.stdout or "unknown unload failure").strip()
+            return {"ok": False, "model": model_name, "error": error_text}
+        except Exception as exc:
+            return {"ok": False, "model": model_name, "error": f"Unload failed: {exc}"}
+
+    def unload_role(self, role: str) -> dict[str, Any]:
+        if not self.is_server_available():
+            return {"ok": False, "error": self.build_unavailable_message(auto_start_attempted=False), "role": role}
+        available = self.list_models()
+        model_name = self.resolve_model_for_role(role, available)
+        if not model_name:
+            return {"ok": False, "error": self.build_model_missing_message(role), "role": role}
+        result = self.unload_model(model_name)
+        result["role"] = role
+        if result.get("ok") and self.last_heavy_role_used == role:
+            self.last_heavy_role_used = None
+        return result
+
+    def unload_all_non_current_models(self, current_role: str | None) -> dict[str, Any]:
+        if not self.is_server_available():
+            return {"ok": False, "error": self.build_unavailable_message(auto_start_attempted=False)}
+
+        available = self.list_models()
+        loaded_entries = self.get_loaded_models()
+        managed_models = self._known_localpilot_model_names(available)
+        keep_models = self._models_to_keep(current_role, available)
+        unloaded: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+
+        for entry in loaded_entries:
+            model_name = entry.get("name")
+            if not model_name or model_name not in managed_models:
+                continue
+            if model_name in keep_models:
+                continue
+            result = self.unload_model(model_name)
+            if result.get("ok"):
+                unloaded.append(result)
+            else:
+                errors.append(result)
+
+        return {
+            "ok": not errors,
+            "current_role": current_role,
+            "unloaded": unloaded,
+            "errors": errors,
+            "loaded_after": self.get_loaded_models(),
+        }
+
+    def warm_role(self, role: str) -> dict[str, Any]:
+        if not self.is_server_available():
+            return {"ok": False, "error": self.build_unavailable_message(auto_start_attempted=False), "role": role}
+
+        available = self.list_models()
+        model_name = self.resolve_model_for_role(role, available)
+        if not model_name:
+            return {"ok": False, "error": self.build_model_missing_message(role), "role": role}
+
+        if self.is_heavy_role(role):
+            self._prepare_role_activation(role)
+
+        profile = self.get_profile(role)
+        payload: dict[str, Any] = {
+            "model": model_name,
+            "prompt": "Reply with OK.",
+            "stream": False,
+            "options": {
+                "num_ctx": min(int(profile.get("num_ctx", 4096)), 256),
+                "temperature": 0,
+            },
+        }
+        if profile.get("keep_alive"):
+            payload["keep_alive"] = profile["keep_alive"]
+        if role == "vision":
+            payload["images"] = [self._tiny_png_base64()]
+
+        try:
+            response = requests.post(
+                f"{self.host}/api/generate",
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            self.active_models[role] = model_name
+            self.last_role_used = role
+            if self.is_heavy_role(role):
+                self.last_heavy_role_used = role
+            return {"ok": True, "role": role, "model": model_name, "detail": "Warmed successfully."}
+        except Exception as exc:
+            return {"ok": False, "role": role, "model": model_name, "error": f"Warmup failed: {exc}"}
 
     def _find_installed_model_name(self, requested: str | None, available: list[str]) -> str | None:
         if not requested:
@@ -194,6 +388,47 @@ class OllamaClient:
             "vision": "num_ctx_vision",
         }
         return mapping.get(role)
+
+    def _tiny_png_base64(self) -> str:
+        return (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7ZxY4AAAAASUVORK5CYII="
+        )
+
+    def _known_localpilot_model_names(self, available: list[str]) -> set[str]:
+        names: set[str] = set()
+        for profile in self.model_profiles.values():
+            preferred = self._find_installed_model_name(profile.get("model"), available)
+            fallback = self._find_installed_model_name(profile.get("fallback_model"), available)
+            if preferred:
+                names.add(preferred)
+            if fallback:
+                names.add(fallback)
+        return names
+
+    def _models_to_keep(self, current_role: str | None, available: list[str]) -> set[str]:
+        keep_models: set[str] = set()
+        if current_role:
+            current_model = self.resolve_model_for_role(current_role, available)
+            if current_model:
+                keep_models.add(current_model)
+        if current_role and self.lifecycle_settings.get("keep_lightweight_roles_loaded", True):
+            for role in self.model_profiles:
+                if role == current_role or self.is_heavy_role(role):
+                    continue
+                model_name = self.resolve_model_for_role(role, available)
+                if model_name:
+                    keep_models.add(model_name)
+        return keep_models
+
+    def _prepare_role_activation(self, role: str) -> None:
+        if not self.lifecycle_enabled():
+            return
+        if not self.is_heavy_role(role):
+            return
+        if not self.lifecycle_settings.get("unload_previous_heavy_role", True):
+            return
+        if self.last_heavy_role_used and self.last_heavy_role_used != role:
+            self.unload_all_non_current_models(role)
 
     def _server_ready_message(self, prefix: str) -> str:
         role_notes = []
@@ -241,6 +476,7 @@ class OllamaClient:
         if not self.is_server_available():
             return self.build_unavailable_message(auto_start_attempted=False)
 
+        self._prepare_role_activation(role)
         available = self.list_models()
         model_name = self.resolve_model_for_role(role, available)
         self.active_models[role] = model_name
@@ -274,6 +510,8 @@ class OllamaClient:
             )
             response.raise_for_status()
             data = response.json()
+            if self.is_heavy_role(role):
+                self.last_heavy_role_used = role
             return data.get("message", {}).get("content", "").strip() or "Ollama returned an empty response."
         except Exception as exc:
             return f"Ollama chat request failed for role `{role}`: {exc}"
@@ -286,6 +524,7 @@ class OllamaClient:
         if not self.is_server_available():
             return self.build_unavailable_message(auto_start_attempted=False)
 
+        self._prepare_role_activation("vision")
         available = self.list_models()
         model_name = self.resolve_model_for_role("vision", available)
         self.active_models["vision"] = model_name
@@ -318,6 +557,7 @@ class OllamaClient:
             response.raise_for_status()
             data = response.json()
             text = data.get("response", "").strip()
+            self.last_heavy_role_used = "vision"
             if text:
                 return text
             return (
@@ -402,6 +642,16 @@ class OllamaClient:
             else:
                 detail += ", current=none"
             lines.append(detail)
+        lifecycle = self.lifecycle_settings
+        lines.append("- Lifecycle:")
+        lines.append(f"  - enabled: {'yes' if lifecycle.get('enabled', True) else 'no'}")
+        lines.append(
+            f"  - unload_previous_heavy_role: {'yes' if lifecycle.get('unload_previous_heavy_role', True) else 'no'}"
+        )
+        lines.append(
+            f"  - keep_lightweight_roles_loaded: {'yes' if lifecycle.get('keep_lightweight_roles_loaded', True) else 'no'}"
+        )
+        lines.append(f"  - heavy_roles: {', '.join(lifecycle.get('heavy_roles', []))}")
         return "\n".join(lines)
 
     def benchmark_model(
@@ -490,6 +740,7 @@ class OllamaClient:
                 lines.append(f"- Warning: qwen3:30b is assigned to role `{role}` outside quality_slow.")
 
         for role, model_name, prompt in benchmark_targets:
+            self._prepare_role_activation("coder" if role == "coder_fallback" else role)
             profile = self.get_profile("coder" if role == "coder_fallback" else role)
             result = self.benchmark_model(
                 model_name=model_name or "",
@@ -515,4 +766,56 @@ class OllamaClient:
                 f"load={load_seconds:.2f}s, "
                 f"eval_tokens={result['eval_count']}"
             )
+            if self.is_heavy_role("coder" if role == "coder_fallback" else role):
+                self.last_heavy_role_used = "coder" if role == "coder_fallback" else role
+        if self.lifecycle_enabled() and self.is_heavy_role(default_role):
+            self.unload_all_non_current_models(default_role)
+        return "\n".join(lines)
+
+    def build_model_unload_report(self) -> str:
+        lines = ["Model unload"]
+        if not self.is_server_available():
+            lines.append("- Warning: Ollama is unavailable, so no unload could be performed.")
+            return "\n".join(lines)
+
+        result = self.unload_all_non_current_models(None)
+        unloaded = result.get("unloaded", [])
+        errors = result.get("errors", [])
+        if unloaded:
+            for item in unloaded:
+                lines.append(f"- Unloaded: {item.get('model')} via {item.get('method', 'unknown')}")
+        else:
+            lines.append("- No loaded LocalPilot models needed unloading.")
+        for item in errors:
+            lines.append(f"- Warning: could not unload {item.get('model', 'unknown')}: {item.get('error', 'unknown error')}")
+
+        loaded_after = result.get("loaded_after", [])
+        lines.append("- Loaded models now:")
+        if loaded_after:
+            for item in loaded_after:
+                lines.append(f"  - {item.get('name')}")
+        else:
+            lines.append("  - none")
+        return "\n".join(lines)
+
+    def build_model_warmup_report(self, roles: tuple[str, ...] = ("router", "main")) -> str:
+        lines = ["Model warmup"]
+        if not self.is_server_available():
+            lines.append("- Warning: Ollama is unavailable, so no warmup could be run.")
+            return "\n".join(lines)
+
+        for role in roles:
+            result = self.warm_role(role)
+            if result.get("ok"):
+                lines.append(f"- Warmed {role}: {result.get('model')}")
+            else:
+                lines.append(f"- Warning: {role} warmup failed -> {result.get('error', 'unknown error')}")
+
+        loaded_after = self.get_loaded_models()
+        lines.append("- Loaded models now:")
+        if loaded_after:
+            for item in loaded_after:
+                lines.append(f"  - {item.get('name')}")
+        else:
+            lines.append("  - none")
         return "\n".join(lines)

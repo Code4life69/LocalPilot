@@ -54,6 +54,48 @@ def test_model_benchmark_command_returns_status_text(tmp_path):
     assert "Model benchmark" in result["message"]
 
 
+def test_model_unload_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "unused",
+        describe_model_unload=lambda: "Model unload\n- No loaded LocalPilot models needed unloading.",
+        describe_model_warmup=lambda: "unused",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model unload"})
+
+    assert result["ok"]
+    assert "Model unload" in result["message"]
+
+
+def test_model_warmup_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "unused",
+        describe_model_unload=lambda: "unused",
+        describe_model_warmup=lambda: "Model warmup\n- Warmed router: granite3.3:2b",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model warmup"})
+
+    assert result["ok"]
+    assert "Model warmup" in result["message"]
+
+
 def test_chat_mode_uses_main_role_for_llm_calls(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)

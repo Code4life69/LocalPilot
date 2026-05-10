@@ -12,6 +12,10 @@ def load_performance_profiles() -> dict:
     return json.loads(Path("config/performance_profiles.json").read_text(encoding="utf-8"))
 
 
+def load_settings() -> dict:
+    return json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
+
+
 def test_model_profiles_default_main_is_qwen3_8b():
     profiles = load_model_profiles()
 
@@ -30,6 +34,18 @@ def test_performance_profiles_default_is_rtx3060_balanced():
 
     assert profiles["default_profile"] == "rtx3060_balanced"
     assert profiles["profiles"]["rtx3060_balanced"]["num_ctx_main"] == 4096
+
+
+def test_lifecycle_config_loads_with_expected_heavy_roles():
+    settings = load_settings()
+
+    assert settings["model_lifecycle"]["enabled"] is True
+    assert settings["model_lifecycle"]["heavy_roles"] == [
+        "main",
+        "coder",
+        "vision",
+        "quality_slow",
+    ]
 
 
 def test_coder_role_falls_back_when_primary_missing():
@@ -127,9 +143,95 @@ def test_model_benchmark_report_warns_when_models_are_missing():
     )
     client.is_server_available = lambda: True
     client.list_models = lambda: ["qwen3:8b"]
+    client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: (
+        {
+            "ok": True,
+            "model": "qwen3:8b",
+            "eval_count": 32,
+            "eval_duration": 1_000_000_000,
+            "load_duration": 250_000_000,
+            "tokens_per_second": 32.0,
+        }
+        if model_name == "qwen3:8b"
+        else {
+            "ok": False,
+            "error": f"Model missing: {model_name}",
+            "model": model_name,
+        }
+    )
 
     report = client.build_model_benchmark_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
     assert "main: model=qwen3:8b" in report
     assert "coder: warning -> Model missing: qwen2.5-coder:14b-instruct-q3_K_M" in report
     assert "router: warning -> Model missing: granite3.3:2b" in report
+
+
+def test_model_unload_report_handles_ollama_unavailable():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    client.is_server_available = lambda: False
+
+    report = client.build_model_unload_report()
+
+    assert "Model unload" in report
+    assert "Ollama is unavailable" in report
+
+
+def test_prepare_role_activation_unloads_previous_heavy_role_when_enabled():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    called = {}
+
+    def fake_unload(current_role):
+        called["current_role"] = current_role
+        return {"ok": True}
+
+    client.unload_all_non_current_models = fake_unload
+    client.last_heavy_role_used = "coder"
+
+    client._prepare_role_activation("vision")
+
+    assert called["current_role"] == "vision"
+
+
+def test_model_warmup_default_roles_never_include_quality_slow():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    warmed_roles = []
+
+    client.is_server_available = lambda: True
+
+    def fake_warm(role):
+        warmed_roles.append(role)
+        return {"ok": True, "role": role, "model": role}
+
+    client.warm_role = fake_warm
+    client.get_loaded_models = lambda: []
+
+    report = client.build_model_warmup_report()
+
+    assert "Model warmup" in report
+    assert warmed_roles == ["router", "main"]
+    assert "quality_slow" not in warmed_roles

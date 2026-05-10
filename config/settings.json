@@ -14,6 +14,17 @@
     "auto_start_server": true,
     "startup_wait_seconds": 8
   },
+  "model_lifecycle": {
+    "enabled": true,
+    "unload_previous_heavy_role": true,
+    "keep_lightweight_roles_loaded": true,
+    "heavy_roles": [
+      "main",
+      "coder",
+      "vision",
+      "quality_slow"
+    ]
+  },
   "git_sync": {
     "enabled": true,
     "push_on_startup": true,

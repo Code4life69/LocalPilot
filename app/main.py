@@ -48,6 +48,7 @@ class LocalPilotApp:
             default_role=self.settings.get("active_model_role", self.model_profiles.get("default_role", "main")),
             performance_profile=self._selected_performance_profile(),
             performance_profile_name=self._active_performance_profile_name(),
+            lifecycle_settings=self.settings.get("model_lifecycle", {}),
         )
         self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
@@ -129,6 +130,12 @@ class LocalPilotApp:
             default_role=default_role,
             performance_profile_name=self._active_performance_profile_name(),
         )
+
+    def describe_model_unload(self) -> str:
+        return self.ollama.build_model_unload_report()
+
+    def describe_model_warmup(self) -> str:
+        return self.ollama.build_model_warmup_report()
 
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
