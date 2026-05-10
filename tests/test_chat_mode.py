@@ -35,6 +35,25 @@ def test_model_status_command_returns_status_text(tmp_path):
     assert "Model status" in result["message"]
 
 
+def test_model_benchmark_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "Model benchmark\n- main: warning -> Ollama unavailable",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model benchmark"})
+
+    assert result["ok"]
+    assert "Model benchmark" in result["message"]
+
+
 def test_chat_mode_uses_main_role_for_llm_calls(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)

@@ -31,6 +31,7 @@ class LocalPilotApp:
         self.root_dir = Path(root_dir)
         self.settings = self._load_json(self.root_dir / "config" / "settings.json")
         self.model_profiles = self._load_json(self.root_dir / "config" / "model_profiles.json")
+        self.performance_profiles = self._load_json(self.root_dir / "config" / "performance_profiles.json")
         self.logger = AppLogger(self.root_dir / self.settings["logs_dir"])
         self.git_sync = GitSyncManager(self.root_dir, self.settings, self.logger)
         self.memory = MemoryStore(
@@ -45,6 +46,8 @@ class LocalPilotApp:
             timeout_seconds=self.model_profiles["ollama"]["timeout_seconds"],
             model_profiles=self.model_profiles,
             default_role=self.settings.get("active_model_role", self.model_profiles.get("default_role", "main")),
+            performance_profile=self._selected_performance_profile(),
+            performance_profile_name=self._active_performance_profile_name(),
         )
         self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
@@ -66,6 +69,16 @@ class LocalPilotApp:
     def attach_gui(self, gui: "LocalPilotGUI") -> None:
         self.gui = gui
         self.logger.register_callback(gui.on_event)
+
+    def _active_performance_profile_name(self) -> str:
+        return self.settings.get(
+            "active_performance_profile",
+            self.performance_profiles.get("default_profile", "rtx3060_balanced"),
+        )
+
+    def _selected_performance_profile(self) -> dict[str, Any]:
+        profile_name = self._active_performance_profile_name()
+        return dict(self.performance_profiles.get("profiles", {}).get(profile_name, {}))
 
     def _initialize_ollama(self) -> None:
         ollama_settings = self.settings.get("ollama", {})
@@ -105,7 +118,17 @@ class LocalPilotApp:
 
     def describe_model_status(self) -> str:
         default_role = self.settings.get("active_model_role", self.model_profiles.get("default_role", "main"))
-        return self.ollama.build_model_status_report(default_role=default_role)
+        return self.ollama.build_model_status_report(
+            default_role=default_role,
+            performance_profile_name=self._active_performance_profile_name(),
+        )
+
+    def describe_model_benchmark(self) -> str:
+        default_role = self.settings.get("active_model_role", self.model_profiles.get("default_role", "main"))
+        return self.ollama.build_model_benchmark_report(
+            default_role=default_role,
+            performance_profile_name=self._active_performance_profile_name(),
+        )
 
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)

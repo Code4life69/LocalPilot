@@ -35,6 +35,11 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_model_status(),
             }
+        if lowered == "model benchmark":
+            return {
+                "ok": True,
+                "message": self.app.describe_model_benchmark(),
+            }
         response = self.app.ollama.chat_with_role("main", self._build_chat_prompt(lowered), text)
         if not self._user_used_emoji(text):
             response = self._strip_simple_emoji(response)

@@ -1,0 +1,21 @@
+{
+  "default_profile": "rtx3060_balanced",
+  "profiles": {
+    "rtx3060_balanced": {
+      "num_ctx_main": 4096,
+      "num_ctx_coder": 4096,
+      "num_ctx_vision": 4096,
+      "max_loaded_models": 1,
+      "num_parallel": 1,
+      "keep_alive": "2m"
+    },
+    "rtx3060_extended": {
+      "num_ctx_main": 8192,
+      "num_ctx_coder": 6144,
+      "num_ctx_vision": 4096,
+      "max_loaded_models": 1,
+      "num_parallel": 1,
+      "keep_alive": "2m"
+    }
+  }
+}

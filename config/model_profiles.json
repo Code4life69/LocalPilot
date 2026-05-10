@@ -6,16 +6,22 @@
   "default_role": "main",
   "main": {
     "model": "qwen3:8b",
-    "num_ctx": 8192,
+    "num_ctx": 4096,
     "temperature": 0.35,
     "description": "Default fast reasoning and planning model"
   },
   "coder": {
     "model": "qwen2.5-coder:14b-instruct-q3_K_M",
     "fallback_model": "qwen2.5-coder:7b",
-    "num_ctx": 8192,
+    "num_ctx": 4096,
     "temperature": 0.2,
     "description": "Coding, app generation, code repair, project editing"
+  },
+  "coder_fallback": {
+    "model": "qwen2.5-coder:7b",
+    "num_ctx": 4096,
+    "temperature": 0.2,
+    "description": "Fallback coding model when the main coder model is unavailable"
   },
   "vision": {
     "model": "qwen2.5vl:7b",
@@ -38,5 +44,17 @@
     "num_ctx": 4096,
     "temperature": 0.3,
     "description": "Optional slow high-quality reasoning mode"
+  },
+  "reasoning_slow": {
+    "model": "deepseek-r1:14b-qwen-distill-q4_K_M",
+    "num_ctx": 4096,
+    "temperature": 0.25,
+    "description": "Optional slow reasoning cross-check"
+  },
+  "general_fallback": {
+    "model": "llama3.1:8b",
+    "num_ctx": 4096,
+    "temperature": 0.3,
+    "description": "Optional stable fallback general model"
   }
 }

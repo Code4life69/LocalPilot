@@ -39,10 +39,28 @@ Recommended install:
 powershell -ExecutionPolicy Bypass -File scripts/install_recommended_models.ps1
 ```
 
+Optional models:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_optional_models.ps1
+```
+
+RTX 3060 tuning:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/configure_ollama_rtx3060.ps1
+```
+
 Model check:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/check_models.ps1
+```
+
+Benchmark:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/benchmark_models.ps1
 ```
 
 ## Required Ollama Models
@@ -77,6 +95,22 @@ For this PC, a shorter Ollama keep-alive is recommended so one large model does 
 ```powershell
 [Environment]::SetEnvironmentVariable("OLLAMA_KEEP_ALIVE", "2m", "User")
 ```
+
+Recommended order on this RTX 3060 machine:
+
+1. Install recommended models.
+2. Run `scripts/configure_ollama_rtx3060.ps1`.
+3. Fully quit and restart Ollama.
+4. Run `scripts/check_models.ps1`.
+5. Run `scripts/benchmark_models.ps1`.
+6. Run LocalPilot and ask for `model benchmark`.
+
+Performance notes:
+
+- `4096` context is the safe default for this machine.
+- `8192` can be tested later with the extended performance profile.
+- Only one heavy model should stay loaded at a time.
+- `qwen3:30b` is slow quality mode only and should not be the everyday default.
 
 ## How To Run
 

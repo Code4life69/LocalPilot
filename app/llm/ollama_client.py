@@ -10,7 +10,17 @@ import requests
 
 
 class OllamaClient:
-    ROLE_NAMES = ("main", "coder", "vision", "router", "embedding", "quality_slow")
+    ROLE_NAMES = (
+        "main",
+        "coder",
+        "coder_fallback",
+        "vision",
+        "router",
+        "embedding",
+        "quality_slow",
+        "reasoning_slow",
+        "general_fallback",
+    )
 
     def __init__(
         self,
@@ -18,10 +28,14 @@ class OllamaClient:
         timeout_seconds: int,
         model_profiles: dict[str, Any],
         default_role: str = "main",
+        performance_profile: dict[str, Any] | None = None,
+        performance_profile_name: str = "rtx3060_balanced",
     ) -> None:
         self.host = host.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.default_role = default_role
+        self.performance_profile = dict(performance_profile or {})
+        self.performance_profile_name = performance_profile_name
         self.model_profiles = {
             key: value
             for key, value in model_profiles.items()
@@ -141,7 +155,13 @@ class OllamaClient:
         return None
 
     def get_profile(self, role: str) -> dict[str, Any]:
-        return dict(self.model_profiles.get(role, {}))
+        profile = dict(self.model_profiles.get(role, {}))
+        ctx_key = self._performance_ctx_key(role)
+        if ctx_key and ctx_key in self.performance_profile:
+            profile["num_ctx"] = self.performance_profile[ctx_key]
+        if "keep_alive" in self.performance_profile:
+            profile["keep_alive"] = self.performance_profile["keep_alive"]
+        return profile
 
     def is_model_installed(self, model_name: str, available: list[str] | None = None) -> bool | None:
         if available is None and not self.is_server_available():
@@ -165,6 +185,15 @@ class OllamaClient:
             if candidate in available:
                 return candidate
         return None
+
+    def _performance_ctx_key(self, role: str) -> str | None:
+        mapping = {
+            "main": "num_ctx_main",
+            "coder": "num_ctx_coder",
+            "coder_fallback": "num_ctx_coder",
+            "vision": "num_ctx_vision",
+        }
+        return mapping.get(role)
 
     def _server_ready_message(self, prefix: str) -> str:
         role_notes = []
@@ -235,6 +264,8 @@ class OllamaClient:
                 "temperature": profile.get("temperature", 0.2),
             },
         }
+        if profile.get("keep_alive"):
+            payload["keep_alive"] = profile["keep_alive"]
         try:
             response = requests.post(
                 f"{self.host}/api/chat",
@@ -276,6 +307,9 @@ class OllamaClient:
                     "temperature": self.model_profiles.get("vision", {}).get("temperature", 0.1),
                 },
             }
+            vision_profile = self.get_profile("vision")
+            if vision_profile.get("keep_alive"):
+                payload["keep_alive"] = vision_profile["keep_alive"]
             response = requests.post(
                 f"{self.host}/api/generate",
                 json=payload,
@@ -329,7 +363,11 @@ class OllamaClient:
         except Exception as exc:
             return {"ok": False, "error": f"Ollama embedding request failed: {exc}"}
 
-    def build_model_status_report(self, default_role: str = "main") -> str:
+    def build_model_status_report(
+        self,
+        default_role: str = "main",
+        performance_profile_name: str | None = None,
+    ) -> str:
         reachable = self.is_server_available()
         available = self.list_models() if reachable else []
         self.resolve_models() if reachable else None
@@ -338,6 +376,7 @@ class OllamaClient:
             "Model status",
             f"- Ollama reachable: {'yes' if reachable else 'no'}",
             f"- Default active role: {default_role}",
+            f"- Performance profile: {performance_profile_name or self.performance_profile_name}",
         ]
         default_model = self.model_profiles.get(default_role, {}).get("model")
         if default_model == "qwen3:30b":
@@ -363,4 +402,117 @@ class OllamaClient:
             else:
                 detail += ", current=none"
             lines.append(detail)
+        return "\n".join(lines)
+
+    def benchmark_model(
+        self,
+        model_name: str,
+        prompt: str,
+        num_ctx: int = 4096,
+        temperature: float = 0.2,
+        images: list[str] | None = None,
+    ) -> dict[str, Any]:
+        if not self.is_server_available():
+            return {"ok": False, "error": self.build_unavailable_message(auto_start_attempted=False), "model": model_name}
+
+        available = self.list_models()
+        installed_name = self._find_installed_model_name(model_name, available)
+        if not installed_name:
+            return {"ok": False, "error": f"Model missing: {model_name}", "model": model_name}
+
+        payload: dict[str, Any] = {
+            "model": installed_name,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "num_ctx": num_ctx,
+                "temperature": temperature,
+            },
+        }
+        keep_alive = self.performance_profile.get("keep_alive")
+        if keep_alive:
+            payload["keep_alive"] = keep_alive
+        if images:
+            payload["images"] = images
+
+        try:
+            response = requests.post(
+                f"{self.host}/api/generate",
+                json=payload,
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            data = response.json()
+            eval_count = int(data.get("eval_count") or 0)
+            eval_duration = int(data.get("eval_duration") or 0)
+            load_duration = int(data.get("load_duration") or 0)
+            tokens_per_second = None
+            if eval_count > 0 and eval_duration > 0:
+                tokens_per_second = eval_count / (eval_duration / 1_000_000_000)
+            return {
+                "ok": True,
+                "model": installed_name,
+                "prompt_eval_count": int(data.get("prompt_eval_count") or 0),
+                "eval_count": eval_count,
+                "eval_duration": eval_duration,
+                "load_duration": load_duration,
+                "total_duration": int(data.get("total_duration") or 0),
+                "tokens_per_second": tokens_per_second,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"Benchmark failed for {installed_name}: {exc}", "model": installed_name}
+
+    def build_model_benchmark_report(
+        self,
+        default_role: str = "main",
+        performance_profile_name: str = "rtx3060_balanced",
+    ) -> str:
+        lines = [
+            "Model benchmark",
+            f"- Default active role: {default_role}",
+            f"- Performance profile: {performance_profile_name}",
+        ]
+        if not self.is_server_available():
+            lines.append("- Warning: Ollama is unavailable, so no benchmark could be run.")
+            return "\n".join(lines)
+
+        benchmark_targets = [
+            ("main", self.model_profiles.get("main", {}).get("model"), "Say one short sentence about local AI."),
+            ("coder", self.model_profiles.get("coder", {}).get("model"), "Write a tiny Python function that adds two numbers."),
+            ("coder_fallback", self.model_profiles.get("coder_fallback", {}).get("model"), "Write a tiny Python function that adds two numbers."),
+            ("router", self.model_profiles.get("router", {}).get("model"), "Classify this request as chat, code, research, desktop, or memory: show notes"),
+        ]
+
+        if self.model_profiles.get(default_role, {}).get("model") == "qwen3:30b":
+            lines.append("- Warning: qwen3:30b is selected as the default role model and may be slow on this PC.")
+        for role, profile in self.model_profiles.items():
+            if role != "quality_slow" and profile.get("model") == "qwen3:30b":
+                lines.append(f"- Warning: qwen3:30b is assigned to role `{role}` outside quality_slow.")
+
+        for role, model_name, prompt in benchmark_targets:
+            profile = self.get_profile("coder" if role == "coder_fallback" else role)
+            result = self.benchmark_model(
+                model_name=model_name or "",
+                prompt=prompt,
+                num_ctx=int(profile.get("num_ctx", 4096)),
+                temperature=float(profile.get("temperature", 0.2)),
+            )
+            if not result.get("ok"):
+                lines.append(f"- {role}: warning -> {result.get('error', 'unknown benchmark failure')}")
+                continue
+
+            load_seconds = result["load_duration"] / 1_000_000_000 if result["load_duration"] else 0
+            tps = result.get("tokens_per_second")
+            speed_note = ""
+            if tps is not None:
+                if tps < 15:
+                    speed_note = " (slow)"
+                elif tps < 30:
+                    speed_note = " (moderate)"
+            lines.append(
+                f"- {role}: model={result['model']}, "
+                f"tps={f'{tps:.2f}' if tps is not None else 'n/a'}{speed_note}, "
+                f"load={load_seconds:.2f}s, "
+                f"eval_tokens={result['eval_count']}"
+            )
         return "\n".join(lines)
