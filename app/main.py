@@ -131,6 +131,16 @@ class LocalPilotApp:
             performance_profile_name=self._active_performance_profile_name(),
         )
 
+    def describe_model_doctor(self) -> str:
+        default_role = self.settings.get("active_model_role", self.model_profiles.get("default_role", "main"))
+        return self.ollama.build_model_doctor_report(
+            default_role=default_role,
+            performance_profile_name=self._active_performance_profile_name(),
+        )
+
+    def describe_model_repair_plan(self) -> str:
+        return self.ollama.build_model_repair_plan()
+
     def describe_model_unload(self) -> str:
         return self.ollama.build_model_unload_report()
 
@@ -815,6 +825,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print model role status and exit without starting the GUI.",
     )
+    parser.add_argument(
+        "--model-doctor",
+        action="store_true",
+        help="Print model doctor diagnostics and exit without starting the GUI.",
+    )
     return parser
 
 
@@ -826,6 +841,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.model_status:
         safe_console_print(app.describe_model_status())
+        app.shutdown()
+        return 0
+
+    if args.model_doctor:
+        safe_console_print(app.describe_model_doctor())
         app.shutdown()
         return 0
 

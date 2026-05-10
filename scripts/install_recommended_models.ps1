@@ -10,6 +10,7 @@ $models = @(
 )
 
 Write-Host "Installing recommended LocalPilot models..." -ForegroundColor Cyan
+Write-Host "Using exact configured tags from LocalPilot role config." -ForegroundColor DarkCyan
 
 foreach ($model in $models) {
     Write-Host ""

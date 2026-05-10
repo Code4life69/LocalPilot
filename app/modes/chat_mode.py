@@ -40,6 +40,16 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_model_benchmark(),
             }
+        if lowered == "model doctor":
+            return {
+                "ok": True,
+                "message": self.app.describe_model_doctor(),
+            }
+        if lowered == "model repair plan":
+            return {
+                "ok": True,
+                "message": self.app.describe_model_repair_plan(),
+            }
         if lowered == "model unload":
             return {
                 "ok": True,

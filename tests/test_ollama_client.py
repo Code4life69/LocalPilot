@@ -16,6 +16,10 @@ def load_settings() -> dict:
     return json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
 
 
+def load_install_script() -> str:
+    return Path("scripts/install_recommended_models.ps1").read_text(encoding="utf-8")
+
+
 def test_model_profiles_default_main_is_qwen3_8b():
     profiles = load_model_profiles()
 
@@ -183,6 +187,92 @@ def test_model_unload_report_handles_ollama_unavailable():
 
     assert "Model unload" in report
     assert "Ollama is unavailable" in report
+
+
+def test_model_doctor_handles_ollama_unavailable():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    client.is_server_available = lambda: False
+
+    report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
+
+    assert "Model doctor" in report
+    assert "- Ollama reachable: no" in report
+    assert "ollama pull qwen3:8b" in report
+
+
+def test_model_doctor_reports_missing_configured_models():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["qwen2.5-coder:7b", "llama3.1:8b"]
+
+    report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
+
+    assert "- Missing configured models:" in report
+    assert "qwen3:8b" in report
+    assert "possible temporary fallback available: llama3.1:8b" in report
+
+
+def test_model_doctor_detects_similar_installed_tags():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["qwen2.5-coder:14b", "qwen2.5-coder:7b"]
+
+    report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
+
+    assert "similar installed models: qwen2.5-coder:14b" in report
+    assert "Similar model found, but exact configured tag is missing." in report
+
+
+def test_model_repair_plan_prints_pull_commands():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["qwen2.5-coder:7b"]
+
+    report = client.build_model_repair_plan()
+
+    assert "Model repair plan" in report
+    assert "ollama pull qwen3:8b" in report
+    assert "ollama pull qwen2.5-coder:14b-instruct-q3_K_M" in report
+    assert "ollama pull qwen3:30b" in report
+
+
+def test_default_install_script_keeps_qwen3_30b_optional():
+    script = load_install_script()
+
+    assert '"qwen3:30b"' not in script
+    assert "Optional slow quality mode is not included here: qwen3:30b" in script
 
 
 def test_prepare_role_activation_unloads_previous_heavy_role_when_enabled():

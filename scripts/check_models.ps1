@@ -16,3 +16,7 @@ ollama list
 Write-Host ""
 Write-Host "LocalPilot model status:" -ForegroundColor Cyan
 & $pythonExe (Join-Path $projectRoot "localpilot.py") --model-status
+
+Write-Host ""
+Write-Host "LocalPilot model doctor:" -ForegroundColor Cyan
+& $pythonExe (Join-Path $projectRoot "localpilot.py") --model-doctor

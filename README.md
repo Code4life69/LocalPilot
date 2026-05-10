@@ -57,6 +57,12 @@ Model check:
 powershell -ExecutionPolicy Bypass -File scripts/check_models.ps1
 ```
 
+Model doctor:
+
+```powershell
+python localpilot.py --model-doctor
+```
+
 Benchmark:
 
 ```powershell
@@ -111,6 +117,18 @@ Performance notes:
 - `8192` can be tested later with the extended performance profile.
 - Only one heavy model should stay loaded at a time.
 - `qwen3:30b` is slow quality mode only and should not be the everyday default.
+
+## Troubleshooting Models
+
+If models show missing after restart:
+
+1. Run `ollama list`.
+2. Run `python localpilot.py --model-doctor`.
+3. Check whether `OLLAMA_MODELS` changed.
+4. Rerun `powershell -ExecutionPolicy Bypass -File scripts/install_recommended_models.ps1`.
+5. Fully quit and restart Ollama.
+
+LocalPilot will report similar installed models when the exact configured tag is missing. For example, `qwen2.5-coder:14b` is not treated as the same thing as `qwen2.5-coder:14b-instruct-q3_K_M`; it is only reported as a likely nearby tag.
 
 ## How To Run
 

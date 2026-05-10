@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import re
 import subprocess
 import time
@@ -11,6 +12,14 @@ import requests
 
 
 class OllamaClient:
+    REQUIRED_RECOMMENDED_ROLES = (
+        "main",
+        "coder",
+        "coder_fallback",
+        "vision",
+        "router",
+        "embedding",
+    )
     ROLE_NAMES = (
         "main",
         "coder",
@@ -144,6 +153,22 @@ class OllamaClient:
         except Exception:
             return []
 
+    def detect_model_directory(self) -> tuple[str, str]:
+        env_dir = os.environ.get("OLLAMA_MODELS")
+        if env_dir:
+            return env_dir, "OLLAMA_MODELS"
+
+        candidates: list[Path] = []
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            candidates.append(Path(local_appdata) / "Ollama" / "models")
+        candidates.append(Path.home() / ".ollama" / "models")
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate), "default"
+        return str(candidates[0] if candidates else (Path.home() / ".ollama" / "models")), "default (not found)"
+
     def resolve_models(self) -> dict[str, str | None]:
         available = self.list_models()
         self.active_models = {
@@ -195,6 +220,51 @@ class OllamaClient:
             return None
         self.resolve_models()
         return self.active_models.get(role)
+
+    def find_similar_installed_models(self, requested: str | None, available: list[str]) -> list[str]:
+        if not requested:
+            return []
+        exact = self._find_installed_model_name(requested, available)
+        requested_family = self._model_family(requested)
+        requested_tag = self._model_tag(requested)
+        ranked: list[tuple[int, str]] = []
+
+        for installed in available:
+            if installed == exact:
+                continue
+            score = 0
+            installed_family = self._model_family(installed)
+            installed_tag = self._model_tag(installed)
+
+            if installed_family == requested_family:
+                score += 5
+            elif requested_family and (requested_family in installed_family or installed_family in requested_family):
+                score += 2
+
+            if requested_tag and installed_tag:
+                requested_prefix = requested_tag.split("-")[0]
+                installed_prefix = installed_tag.split("-")[0]
+                if requested_prefix == installed_prefix:
+                    score += 3
+                requested_tokens = {token for token in re.split(r"[-_\.]+", requested_tag) if token}
+                installed_tokens = {token for token in re.split(r"[-_\.]+", installed_tag) if token}
+                score += min(len(requested_tokens & installed_tokens), 2)
+
+            if score > 0:
+                ranked.append((score, installed))
+
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [item[1] for item in ranked[:4]]
+
+    def suggested_temporary_fallback(self, role: str, available: list[str]) -> str | None:
+        fallback_map = {
+            "main": ["llama3.1:8b"],
+        }
+        for candidate in fallback_map.get(role, []):
+            match = self._find_installed_model_name(candidate, available)
+            if match:
+                return match
+        return None
 
     def get_loaded_models(self) -> list[dict[str, Any]]:
         if not self.is_server_available():
@@ -379,6 +449,16 @@ class OllamaClient:
             if candidate in available:
                 return candidate
         return None
+
+    def _model_family(self, model_name: str | None) -> str:
+        if not model_name:
+            return ""
+        return model_name.split(":", 1)[0].lower()
+
+    def _model_tag(self, model_name: str | None) -> str:
+        if not model_name or ":" not in model_name:
+            return ""
+        return model_name.split(":", 1)[1].lower()
 
     def _performance_ctx_key(self, role: str) -> str | None:
         mapping = {
@@ -642,6 +722,11 @@ class OllamaClient:
             else:
                 detail += ", current=none"
             lines.append(detail)
+            temp_fallback = None
+            if reachable and not current:
+                temp_fallback = self.suggested_temporary_fallback(role, available)
+            if temp_fallback:
+                lines.append(f"    possible temporary fallback available: {temp_fallback}")
         lifecycle = self.lifecycle_settings
         lines.append("- Lifecycle:")
         lines.append(f"  - enabled: {'yes' if lifecycle.get('enabled', True) else 'no'}")
@@ -770,6 +855,123 @@ class OllamaClient:
                 self.last_heavy_role_used = "coder" if role == "coder_fallback" else role
         if self.lifecycle_enabled() and self.is_heavy_role(default_role):
             self.unload_all_non_current_models(default_role)
+        return "\n".join(lines)
+
+    def build_model_doctor_report(
+        self,
+        default_role: str = "main",
+        performance_profile_name: str | None = None,
+    ) -> str:
+        reachable = self.is_server_available()
+        available = self.list_models() if reachable else []
+        self.resolve_models() if reachable else None
+        model_dir, model_dir_source = self.detect_model_directory()
+        ollama_models_env = os.environ.get("OLLAMA_MODELS") or "not set"
+
+        lines = [
+            "Model doctor",
+            f"- Ollama reachable: {'yes' if reachable else 'no'}",
+            f"- Ollama model directory: {model_dir} ({model_dir_source})",
+            f"- OLLAMA_MODELS: {ollama_models_env}",
+            f"- Default active role: {default_role}",
+            f"- Performance profile: {performance_profile_name or self.performance_profile_name}",
+        ]
+
+        if not reachable:
+            lines.append("- Installed models: unknown because Ollama is unavailable.")
+            lines.append("- Recommended repair commands:")
+            for command in self.recommended_repair_commands([]):
+                lines.append(f"  {command}")
+            return "\n".join(lines)
+
+        lines.append("- Installed models:")
+        if available:
+            for model in available:
+                lines.append(f"  - {model}")
+        else:
+            lines.append("  - none reported by `ollama list`")
+
+        if ollama_models_env != "not set" and not Path(model_dir).exists():
+            lines.append("- Warning: OLLAMA_MODELS is set, but the directory does not exist.")
+        elif not available:
+            lines.append("- Warning: Ollama is reachable but returned no installed models. Check OLLAMA_MODELS and your model path.")
+
+        lines.append("- Configured roles:")
+        missing_models: list[str] = []
+        for role in self.ROLE_NAMES:
+            profile = self.model_profiles.get(role)
+            if not profile:
+                continue
+            preferred = profile.get("model")
+            fallback = profile.get("fallback_model")
+            exact = self._find_installed_model_name(preferred, available)
+            current = self.active_models.get(role)
+            status = "installed" if exact else "missing"
+            detail = f"  - {role}: preferred={preferred} [{status}]"
+            if current:
+                detail += f", current={current}"
+            else:
+                detail += ", current=none"
+            if fallback:
+                fallback_exact = self._find_installed_model_name(fallback, available)
+                detail += f", fallback={fallback} [{'installed' if fallback_exact else 'missing'}]"
+            lines.append(detail)
+
+            if not exact and preferred:
+                missing_models.append(preferred)
+                similar = self.find_similar_installed_models(preferred, available)
+                if similar:
+                    lines.append(f"    similar installed models: {', '.join(similar)}")
+                    lines.append("    Similar model found, but exact configured tag is missing.")
+                temp_fallback = self.suggested_temporary_fallback(role, available)
+                if temp_fallback:
+                    lines.append(f"    possible temporary fallback available: {temp_fallback}")
+
+        lines.append("- Missing configured models:")
+        if missing_models:
+            for model in missing_models:
+                lines.append(f"  - {model}")
+        else:
+            lines.append("  - none")
+
+        lines.append("- Recommended repair commands:")
+        for command in self.recommended_repair_commands(available):
+            lines.append(f"  {command}")
+        return "\n".join(lines)
+
+    def recommended_repair_commands(self, available: list[str]) -> list[str]:
+        commands: list[str] = []
+        for role in self.REQUIRED_RECOMMENDED_ROLES:
+            profile = self.model_profiles.get(role, {})
+            model_name = profile.get("model")
+            if not model_name:
+                continue
+            status = "already installed" if self._find_installed_model_name(model_name, available) else "missing"
+            commands.append(f"ollama pull {model_name}  # {status}")
+        quality_model = self.model_profiles.get("quality_slow", {}).get("model")
+        if quality_model:
+            status = "already installed" if self._find_installed_model_name(quality_model, available) else "optional"
+            commands.append(f"ollama pull {quality_model}  # {status}")
+        return commands
+
+    def build_model_repair_plan(self) -> str:
+        reachable = self.is_server_available()
+        available = self.list_models() if reachable else []
+        lines = [
+            "Model repair plan",
+            "- This plan does not pull automatically.",
+            "- Run these commands in PowerShell:",
+        ]
+        for command in self.recommended_repair_commands(available):
+            lines.append(f"  {command}")
+        lines.extend(
+            [
+                "- After pulling:",
+                "  1. Fully quit Ollama.",
+                "  2. Start Ollama again.",
+                "  3. Run: powershell -ExecutionPolicy Bypass -File scripts/check_models.ps1",
+            ]
+        )
         return "\n".join(lines)
 
     def build_model_unload_report(self) -> str:

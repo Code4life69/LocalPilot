@@ -96,6 +96,52 @@ def test_model_warmup_command_returns_status_text(tmp_path):
     assert "Model warmup" in result["message"]
 
 
+def test_model_doctor_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "unused",
+        describe_model_doctor=lambda: "Model doctor\n- Ollama reachable: yes",
+        describe_model_repair_plan=lambda: "unused",
+        describe_model_unload=lambda: "unused",
+        describe_model_warmup=lambda: "unused",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model doctor"})
+
+    assert result["ok"]
+    assert "Model doctor" in result["message"]
+
+
+def test_model_repair_plan_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "unused",
+        describe_model_doctor=lambda: "unused",
+        describe_model_repair_plan=lambda: "Model repair plan\n- This plan does not pull automatically.",
+        describe_model_unload=lambda: "unused",
+        describe_model_warmup=lambda: "unused",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model repair plan"})
+
+    assert result["ok"]
+    assert "Model repair plan" in result["message"]
+
+
 def test_chat_mode_uses_main_role_for_llm_calls(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)
