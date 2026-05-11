@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.system_doctor import dependency_missing_payload
+
 
 def get_focused_control() -> dict:
     try:
@@ -15,6 +17,10 @@ def get_focused_control() -> dict:
             "automation_id": getattr(control, "AutomationId", ""),
             "bounds": _extract_bounds(control),
         }
+    except ModuleNotFoundError as exc:
+        if _is_uiautomation_missing(exc):
+            return dependency_missing_payload("uiautomation")
+        return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -31,6 +37,10 @@ def get_active_window_title() -> dict:
             "automation_id": getattr(window, "AutomationId", ""),
             "bounds": _extract_bounds(window),
         }
+    except ModuleNotFoundError as exc:
+        if _is_uiautomation_missing(exc):
+            return dependency_missing_payload("uiautomation")
+        return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -52,6 +62,10 @@ def list_visible_controls(max_depth: int = 2) -> dict:
                 }
             )
         return {"ok": True, "controls": controls}
+    except ModuleNotFoundError as exc:
+        if _is_uiautomation_missing(exc):
+            return dependency_missing_payload("uiautomation")
+        return {"ok": False, "error": str(exc)}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -72,6 +86,13 @@ def get_control_at_point(x: int, y: int) -> dict:
             "automation_id": getattr(control, "AutomationId", ""),
             "bounds": _extract_bounds(control),
         }
+    except ModuleNotFoundError as exc:
+        if _is_uiautomation_missing(exc):
+            payload = dependency_missing_payload("uiautomation")
+            payload["x"] = x
+            payload["y"] = y
+            return payload
+        return {"ok": False, "error": str(exc), "x": x, "y": y}
     except Exception as exc:
         return {"ok": False, "error": str(exc), "x": x, "y": y}
 
@@ -106,3 +127,8 @@ def _extract_bounds(control) -> dict[str, int] | None:
         return {"left": left, "top": top, "right": right, "bottom": bottom}
     except Exception:
         return None
+
+
+def _is_uiautomation_missing(exc: ModuleNotFoundError) -> bool:
+    target = (exc.name or "").lower()
+    return target == "uiautomation" or "uiautomation" in str(exc).lower()

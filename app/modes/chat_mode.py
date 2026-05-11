@@ -55,6 +55,11 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_vision_test(),
             }
+        if lowered == "system doctor":
+            return {
+                "ok": True,
+                "message": self.app.describe_system_doctor(),
+            }
         if lowered == "model unload":
             return {
                 "ok": True,

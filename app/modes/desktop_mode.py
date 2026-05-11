@@ -139,7 +139,10 @@ class DesktopMode:
             f"Under mouse: {under_mouse_summary}",
             f"Visible controls: {visible_count}",
         ]
-        if visible_controls.get("error"):
+        dependency_warning = self._dependency_warning(focused_control) or self._dependency_warning(under_mouse) or self._dependency_warning(visible_controls)
+        if dependency_warning:
+            lines.append(dependency_warning)
+        elif visible_controls.get("error"):
             lines.append(f"Visible control scan warning: {visible_controls['error']}")
         return {
             "ok": True,
@@ -167,7 +170,10 @@ class DesktopMode:
             f"Mouse position: ({mouse_position.get('x', 'unknown')}, {mouse_position.get('y', 'unknown')})",
             f"Under mouse: {self._control_summary(under_mouse)}",
         ]
-        if under_mouse.get("error"):
+        dependency_warning = self._dependency_warning(under_mouse)
+        if dependency_warning:
+            lines.append(dependency_warning)
+        elif under_mouse.get("error"):
             lines.append(f"UI Automation warning: {under_mouse['error']}")
         return {
             "ok": True,
@@ -179,7 +185,10 @@ class DesktopMode:
     def _describe_focused_control(self) -> dict:
         focused_control = get_focused_control()
         lines = [f"Focused control: {self._control_summary(focused_control)}"]
-        if focused_control.get("error"):
+        dependency_warning = self._dependency_warning(focused_control)
+        if dependency_warning:
+            lines.append(dependency_warning)
+        elif focused_control.get("error"):
             lines.append(f"UI Automation warning: {focused_control['error']}")
         return {
             "ok": True,
@@ -195,7 +204,10 @@ class DesktopMode:
             lines.append(
                 f"- {control.get('control_type') or 'Control'}: {control.get('name') or '(unnamed)'}"
             )
-        if visible_controls.get("error"):
+        dependency_warning = self._dependency_warning(visible_controls)
+        if dependency_warning:
+            lines.append(dependency_warning)
+        elif visible_controls.get("error"):
             lines.append(f"UI Automation warning: {visible_controls['error']}")
         return {
             "ok": True,
@@ -216,7 +228,16 @@ class DesktopMode:
 
     def _control_summary(self, control: dict) -> str:
         if not control.get("ok"):
+            if control.get("reason") == "dependency_missing":
+                return f"Unavailable (dependency_missing: {control.get('dependency')})"
             return f"Unavailable ({control.get('error', 'unknown reason')})"
         control_type = control.get("control_type") or "Control"
         name = control.get("name") or "(unnamed)"
         return f"{control_type}: {name}"
+
+    def _dependency_warning(self, payload: dict) -> str | None:
+        if payload.get("reason") != "dependency_missing":
+            return None
+        dependency = payload.get("dependency", "unknown")
+        fix = payload.get("fix", "Install the missing dependency into .venv.")
+        return f"UI Automation status: dependency_missing ({dependency}). Fix: {fix}"

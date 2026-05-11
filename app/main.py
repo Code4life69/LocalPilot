@@ -24,6 +24,7 @@ from app.modes.desktop_mode import DesktopMode
 from app.modes.research_mode import ResearchMode
 from app.router import KeywordRouter
 from app.safety import SafetyManager
+from app.system_doctor import build_system_doctor_report
 
 
 class LocalPilotApp:
@@ -151,6 +152,12 @@ class LocalPilotApp:
 
     def describe_vision_test(self) -> str:
         return self.ollama.build_vision_test_report()
+
+    def describe_system_doctor(self) -> str:
+        return build_system_doctor_report(
+            root_dir=self.root_dir,
+            ollama_reachable=self.ollama.is_server_available(),
+        )
 
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
@@ -840,6 +847,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run a minimal vision probe and exit without starting the GUI.",
     )
+    parser.add_argument(
+        "--system-doctor",
+        action="store_true",
+        help="Print dependency and runtime diagnostics and exit without starting the GUI.",
+    )
     return parser
 
 
@@ -861,6 +873,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.vision_test:
         safe_console_print(app.describe_vision_test())
+        app.shutdown()
+        return 0
+
+    if args.system_doctor:
+        safe_console_print(app.describe_system_doctor())
         app.shutdown()
         return 0
 

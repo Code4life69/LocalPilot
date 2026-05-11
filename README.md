@@ -63,6 +63,12 @@ Model doctor:
 python localpilot.py --model-doctor
 ```
 
+System doctor:
+
+```powershell
+python localpilot.py --system-doctor
+```
+
 Benchmark:
 
 ```powershell
@@ -131,6 +137,27 @@ If models show missing after restart:
 5. Fully quit and restart Ollama.
 
 LocalPilot will report similar installed models when the exact configured tag is missing. For example, `qwen2.5-coder:14b` is not treated as the same thing as `qwen2.5-coder:14b-instruct-q3_K_M`; it is only reported as a likely nearby tag.
+
+## Troubleshooting Desktop Observation
+
+If desktop observation shows `dependency_missing` for UI Automation:
+
+1. Run `python localpilot.py --system-doctor`
+2. Install the missing dependency into the LocalPilot virtual environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install uiautomation
+```
+
+3. If more than one package is missing, reinstall the full requirements set:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+4. Restart LocalPilot using [Run LocalPilot.bat](</C:/LocalPilot/Run LocalPilot.bat>)
+
+`Run LocalPilot.bat` is already configured to use `.venv\Scripts\python.exe`, so dependency fixes should be installed into that same environment.
 
 ## How To Run
 
