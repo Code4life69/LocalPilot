@@ -661,91 +661,115 @@ class LocalPilotGUI:
         if not settings.get("show_overlay", True):
             return
 
-        def build_overlay() -> None:
-            if self.desktop_overlay is not None and self.desktop_overlay.winfo_exists():
-                if self.desktop_overlay_action_label is not None and self.desktop_overlay_action_label.winfo_exists():
-                    self.desktop_overlay_action_label.configure(text=f"Current action: {action_name}")
-                self.desktop_overlay.lift()
-                self.desktop_overlay.update_idletasks()
-                return
-
-            overlay = tk.Toplevel(self.root)
-            overlay.title(settings.get("title", "LocalPilot Is Using Your PC"))
-            overlay.attributes("-topmost", True)
-            overlay.geometry("560x220+480+220")
-            overlay.configure(bg="#101820")
-            overlay.resizable(False, False)
-            overlay.protocol("WM_DELETE_WINDOW", lambda: None)
-            overlay.transient(self.root)
-            try:
-                overlay.grab_set()
-            except Exception:
-                pass
-
-            title = tk.Label(
-                overlay,
-                text=settings.get("title", "LocalPilot Is Using Your PC"),
-                font=("Segoe UI", 18, "bold"),
-                fg="#f4f6f8",
-                bg="#101820",
-            )
-            title.pack(pady=(24, 12))
-
-            body = tk.Label(
-                overlay,
-                text=settings.get(
-                    "message",
-                    "Please do not touch your mouse or keyboard until this action is finished.",
-                ),
-                font=("Segoe UI", 12),
-                fg="#f4f6f8",
-                bg="#101820",
-                wraplength=500,
-                justify="center",
-            )
-            body.pack(padx=24)
-
-            action = tk.Label(
-                overlay,
-                text=f"Current action: {action_name}",
-                font=("Segoe UI", 11, "bold"),
-                fg="#86d0ff",
-                bg="#101820",
-            )
-            action.pack(pady=(14, 8))
-
-            footer = tk.Label(
-                overlay,
-                text=settings.get(
-                    "footer",
-                    "LocalPilot will remove this notice as soon as it is safe again.",
-                ),
-                font=("Segoe UI", 10),
-                fg="#b8c4cc",
-                bg="#101820",
-                wraplength=500,
-                justify="center",
-            )
-            footer.pack(padx=24, pady=(0, 18))
-
-            self.desktop_overlay = overlay
-            self.desktop_overlay_action_label = action
-            self.desktop_overlay_shown_at = time.monotonic()
-            overlay.update_idletasks()
-            try:
-                overlay.update()
-            except tk.TclError:
-                pass
-
         if threading.current_thread() is threading.main_thread():
-            build_overlay()
-            self.root.update_idletasks()
+            self._build_or_refresh_desktop_overlay(action_name)
+            self._flush_root_updates()
+        else:
+            ready = threading.Event()
+
+            def build_overlay() -> None:
+                try:
+                    self._build_or_refresh_desktop_overlay(action_name)
+                    self._flush_root_updates()
+                finally:
+                    ready.set()
+
+            self.root.after(0, build_overlay)
+            ready.wait(timeout=2.0)
+
+    def _build_or_refresh_desktop_overlay(self, action_name: str) -> None:
+        settings = self.app.settings.get("desktop_guard", {})
+        if self.desktop_overlay is not None and self.desktop_overlay.winfo_exists():
+            if self.desktop_overlay_action_label is not None and self.desktop_overlay_action_label.winfo_exists():
+                self.desktop_overlay_action_label.configure(text=f"Current action: {action_name}")
+            self.desktop_overlay.deiconify()
+            self.desktop_overlay.lift()
             try:
-                self.root.update()
+                self.desktop_overlay.focus_force()
             except tk.TclError:
                 pass
-        else:
-            self.root.after(0, build_overlay)
+            self.desktop_overlay.update_idletasks()
+            return
+
+        overlay = tk.Toplevel(self.root)
+        overlay.title(settings.get("title", "LocalPilot Is Using Your PC"))
+        overlay.attributes("-topmost", True)
+        overlay.geometry("560x220+480+220")
+        overlay.configure(bg="#101820")
+        overlay.resizable(False, False)
+        overlay.protocol("WM_DELETE_WINDOW", lambda: None)
+        try:
+            overlay.grab_set()
+        except Exception:
+            pass
+
+        title = tk.Label(
+            overlay,
+            text=settings.get("title", "LocalPilot Is Using Your PC"),
+            font=("Segoe UI", 18, "bold"),
+            fg="#f4f6f8",
+            bg="#101820",
+        )
+        title.pack(pady=(24, 12))
+
+        body = tk.Label(
+            overlay,
+            text=settings.get(
+                "message",
+                "Please do not touch your mouse or keyboard until this action is finished.",
+            ),
+            font=("Segoe UI", 12),
+            fg="#f4f6f8",
+            bg="#101820",
+            wraplength=500,
+            justify="center",
+        )
+        body.pack(padx=24)
+
+        action = tk.Label(
+            overlay,
+            text=f"Current action: {action_name}",
+            font=("Segoe UI", 11, "bold"),
+            fg="#86d0ff",
+            bg="#101820",
+        )
+        action.pack(pady=(14, 8))
+
+        footer = tk.Label(
+            overlay,
+            text=settings.get(
+                "footer",
+                "LocalPilot will remove this notice as soon as it is safe again.",
+            ),
+            font=("Segoe UI", 10),
+            fg="#b8c4cc",
+            bg="#101820",
+            wraplength=500,
+            justify="center",
+        )
+        footer.pack(padx=24, pady=(0, 18))
+
+        self.desktop_overlay = overlay
+        self.desktop_overlay_action_label = action
+        self.desktop_overlay_shown_at = time.monotonic()
+        overlay.deiconify()
+        overlay.lift()
+        try:
+            overlay.focus_force()
+        except tk.TclError:
+            pass
+        overlay.update_idletasks()
+        try:
+            overlay.update()
+        except tk.TclError:
+            pass
+
+    def _flush_root_updates(self) -> None:
+        self.root.update_idletasks()
+        try:
+            self.root.update()
+        except tk.TclError:
+            pass
 
     def hide_desktop_busy_overlay(self) -> None:
         def destroy_overlay() -> None:

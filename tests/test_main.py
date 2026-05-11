@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import threading
 
 from app import main as main_module
 from app.main import LocalPilotApp, LocalPilotGUI, format_result
@@ -159,3 +160,34 @@ def test_main_system_doctor_flag_prints_without_gui(monkeypatch):
     assert exit_code == 0
     assert calls["shutdown"] is True
     assert calls["output"] == ["System doctor\n- UI Automation: dependency_missing"]
+
+
+def test_show_desktop_busy_overlay_waits_for_background_thread_build(monkeypatch):
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.app = SimpleNamespace(settings={"desktop_guard": {"show_overlay": True}})
+    gui.desktop_overlay = None
+    gui.desktop_overlay_action_label = None
+    gui.desktop_overlay_shown_at = None
+    called = {"count": 0}
+
+    class FakeRoot:
+        def after(self, _delay, callback):
+            callback()
+
+        def update_idletasks(self):
+            return None
+
+        def update(self):
+            return None
+
+    gui.root = FakeRoot()
+    gui._build_or_refresh_desktop_overlay = lambda action_name: called.__setitem__("count", called["count"] + 1)
+
+    fake_main_thread = object()
+    fake_worker_thread = object()
+    monkeypatch.setattr(threading, "main_thread", lambda: fake_main_thread)
+    monkeypatch.setattr(threading, "current_thread", lambda: fake_worker_thread)
+
+    gui.show_desktop_busy_overlay("type text")
+
+    assert called["count"] == 1
