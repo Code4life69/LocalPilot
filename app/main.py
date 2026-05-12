@@ -167,6 +167,20 @@ class LocalPilotApp:
         if followup_request is not None:
             return followup_request
 
+        if self.safety.is_broad_destructive_request(user_text):
+            self.logger.event("Safety", "Destructive request blocked", user_text=user_text)
+            return {
+                "user_text": user_text,
+                "mode": "safety",
+                "requires_confirmation": False,
+                "approved": False,
+                "result": {
+                    "ok": False,
+                    "error": self.safety.destructive_refusal_message(user_text),
+                },
+                "events": [{"role": "Safety", "message": "Destructive request blocked"}],
+            }
+
         request: dict[str, Any] = {
             "user_text": user_text,
             "mode": self.router.classify(user_text),

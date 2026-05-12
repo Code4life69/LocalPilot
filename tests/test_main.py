@@ -70,6 +70,26 @@ def test_negative_followup_cancels_pending_task():
     assert app.pending_followup is None
 
 
+def test_broad_destructive_request_routes_through_safety_refusal():
+    events = []
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.pending_followup = None
+    app.safety = SimpleNamespace(
+        is_broad_destructive_request=lambda text: True,
+        destructive_refusal_message=lambda text: "Blocked by safety.",
+    )
+    app.logger = SimpleNamespace(event=lambda role, message, **extra: events.append((role, message, extra)))
+
+    request = app.process_user_input(r"delete everything in C:\LocalPilot\workspace")
+
+    assert request["mode"] == "safety"
+    assert request["approved"] is False
+    assert request["result"]["ok"] is False
+    assert request["result"]["error"] == "Blocked by safety."
+    assert request["events"] == [{"role": "Safety", "message": "Destructive request blocked"}]
+    assert events == [("Safety", "Destructive request blocked", {"user_text": r"delete everything in C:\LocalPilot\workspace"})]
+
+
 def test_main_model_status_flag_prints_without_gui(monkeypatch):
     calls = {"shutdown": False, "output": []}
 
