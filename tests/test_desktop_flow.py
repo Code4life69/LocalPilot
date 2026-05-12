@@ -44,6 +44,16 @@ def test_desktop_flow_uses_image_search_when_requested():
     assert "tbm=isch" in plan[0].value
 
 
+def test_github_issue_phrase_resolves_to_direct_github_url():
+    flow = DesktopExecutionFlow(DummyApp())
+    plan = flow._build_plan("search for Code4life69 LocalPilot issue 4 on google in the browser")
+
+    assert [step.name for step in plan] == ["open_github_issue"]
+    assert plan[0].value == "https://github.com/Code4life69/LocalPilot/issues/4"
+    assert plan[0].metadata["objective_kind"] == "github_issue"
+    assert plan[0].metadata["require_objective_match"] is True
+
+
 def test_desktop_flow_handles_explicit_urls():
     flow = DesktopExecutionFlow(DummyApp())
     plan = flow._build_plan("open https://github.com/Code4life69/LocalPilot/issues/4 in the browser")
@@ -145,6 +155,136 @@ def test_successful_google_title_passes_verification():
     assert ok is True
     assert snapshot["verification"]["verified"] is True
     assert snapshot["verification"]["verification_source"] == "active_window_title"
+
+
+def test_google_results_with_missing_owner_fail_objective_verification():
+    flow = DesktopExecutionFlow(DummyApp())
+    step = PlannedStep(
+        name="verify_search",
+        description="Verify that Google search results are visible",
+        kind="verify",
+        expected_terms=["code4life69", "localpilot", "issue"],
+        vision_prompt="Check whether this is a Google results page for Code4life69 LocalPilot issue 4.",
+        metadata={
+            "page_type": "google_results",
+            "objective_kind": "github_issue",
+            "require_objective_match": True,
+            "owner": "Code4life69",
+            "repo": "LocalPilot",
+            "issue_number": "4",
+        },
+    )
+
+    flow.inspect = lambda include_vision=False, vision_prompt=None: {
+        "active_window": {"title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+        "ocr_text": "Missing: Code4life69\nSearch results",
+        "vision_analysis": "",
+    }
+
+    ok, detail, snapshot = flow._verify_step(step)
+
+    assert ok is False
+    assert snapshot["verification"]["page_verified"] is True
+    assert snapshot["verification"]["objective_verified"] is False
+    assert snapshot["verification"]["result"] == "partial"
+    assert "Missing: Code4life69" in snapshot["verification"]["reason"]
+
+
+def test_google_results_with_unrelated_target_are_partial_not_success():
+    flow = DesktopExecutionFlow(DummyApp())
+    step = PlannedStep(
+        name="verify_search",
+        description="Verify that Google search results are visible",
+        kind="verify",
+        expected_terms=["code4life69", "localpilot", "issue"],
+        vision_prompt="Check whether this is a Google results page for Code4life69 LocalPilot issue 4.",
+        metadata={
+            "page_type": "google_results",
+            "objective_kind": "github_issue",
+            "require_objective_match": True,
+            "owner": "Code4life69",
+            "repo": "LocalPilot",
+            "issue_number": "4",
+        },
+    )
+
+    flow.inspect = lambda include_vision=False, vision_prompt=None: {
+        "active_window": {"title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+        "ocr_text": "danielgross/localpilot unrelated result",
+        "vision_analysis": "The page is a Google search results page. The first result appears unrelated to Code4life69.",
+    }
+
+    ok, detail, snapshot = flow._verify_step(step)
+
+    assert ok is False
+    assert snapshot["verification"]["page_verified"] is True
+    assert snapshot["verification"]["objective_verified"] is False
+    assert snapshot["verification"]["result"] == "partial"
+    assert "could not verify the correct target result" in snapshot["verification"]["reason"].lower()
+
+
+def test_direct_github_issue_url_verification_passes():
+    flow = DesktopExecutionFlow(DummyApp())
+    step = PlannedStep(
+        name="open_github_issue",
+        description="Open GitHub issue #4 for Code4life69/LocalPilot",
+        kind="open_url",
+        value="https://github.com/Code4life69/LocalPilot/issues/4",
+        expected_terms=["code4life69", "localpilot", "issue 4"],
+        vision_prompt="Check whether this is GitHub issue #4 for Code4life69/LocalPilot.",
+        metadata={
+            "page_type": "github_issue",
+            "objective_kind": "github_issue",
+            "require_objective_match": True,
+            "owner": "Code4life69",
+            "repo": "LocalPilot",
+            "issue_number": "4",
+        },
+    )
+
+    flow.inspect = lambda include_vision=False, vision_prompt=None: {
+        "active_window": {"title": "Polish GUI formatting and professional desktop UI · Issue #4 · Code4life69/LocalPilot - Google Chrome"},
+        "ocr_text": "Code4life69/LocalPilot Issue 4",
+        "vision_analysis": "",
+    }
+
+    ok, detail, snapshot = flow._verify_step(step)
+
+    assert ok is True
+    assert snapshot["verification"]["page_verified"] is True
+    assert snapshot["verification"]["objective_verified"] is True
+    assert snapshot["verification"]["result"] == "completed"
+
+
+def test_generic_google_search_can_complete_with_page_verification_only():
+    flow = DesktopExecutionFlow(DummyApp())
+    step = PlannedStep(
+        name="open_search_results",
+        description="Open Google search results for 'dolphins'",
+        kind="open_url",
+        value="https://www.google.com/search?q=dolphins",
+        expected_terms=["dolphins"],
+        vision_prompt="Check whether this is a Google results page for dolphins.",
+        metadata={
+            "page_type": "google_results",
+            "objective_kind": "generic_search",
+            "require_objective_match": False,
+            "query": "dolphins",
+        },
+    )
+
+    flow.inspect = lambda include_vision=False, vision_prompt=None: {
+        "active_window": {"title": "dolphins - Google Search - Google Chrome"},
+        "ocr_text": "Google Search dolphins",
+        "vision_analysis": "",
+    }
+
+    ok, detail, snapshot = flow._verify_step(step)
+
+    assert ok is True
+    assert snapshot["verification"]["page_verified"] is True
+    assert snapshot["verification"]["objective_verified"] is True
+    assert snapshot["verification"]["result"] == "completed"
 
 
 def test_failed_verification_returns_ok_false():
