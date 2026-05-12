@@ -20,20 +20,15 @@ def test_desktop_flow_detects_google_search_requests():
     flow = DesktopExecutionFlow(DummyApp())
     assert flow.can_handle("search for dolphins on google in the browser")
     plan = flow._build_plan("search for dolphins on google in the browser")
-    assert [step.name for step in plan] == [
-        "open_google",
-        "focus_address_bar",
-        "type_search_url",
-        "submit_search",
-        "verify_search",
-    ]
-    assert "q=dolphins" in plan[2].value
+    assert [step.name for step in plan] == ["open_search_results"]
+    assert "q=dolphins" in plan[0].value
 
 
 def test_desktop_flow_uses_image_search_when_requested():
     flow = DesktopExecutionFlow(DummyApp())
     plan = flow._build_plan("search for dolphins images on google")
-    assert "tbm=isch" in plan[2].value
+    assert len(plan) == 1
+    assert "tbm=isch" in plan[0].value
 
 
 def test_desktop_flow_handles_explicit_urls():
@@ -50,15 +45,9 @@ def test_desktop_flow_handles_conversational_google_images_request():
         plan = flow._build_plan(
             "can you search a random thing up on google then go to images then save and copy your favourite image in a folder"
         )
-    assert [step.name for step in plan] == [
-        "open_google",
-        "focus_address_bar",
-        "type_search_url",
-        "submit_search",
-        "verify_search",
-    ]
-    assert "tbm=isch" in plan[2].value
-    assert "q=dolphins" in plan[2].value
+    assert [step.name for step in plan] == ["open_search_results"]
+    assert "tbm=isch" in plan[0].value
+    assert "q=dolphins" in plan[0].value
 
 
 def test_desktop_flow_detects_image_download_followup_request():

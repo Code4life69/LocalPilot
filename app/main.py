@@ -828,10 +828,6 @@ class LocalPilotGUI:
                 self.desktop_overlay_action_label.configure(text=f"Current action: {action_name}")
             self.desktop_overlay.deiconify()
             self.desktop_overlay.lift()
-            try:
-                self.desktop_overlay.focus_force()
-            except tk.TclError:
-                pass
             self.desktop_overlay.update_idletasks()
             return
 
@@ -842,10 +838,6 @@ class LocalPilotGUI:
         overlay.configure(bg="#101820")
         overlay.resizable(False, False)
         overlay.protocol("WM_DELETE_WINDOW", lambda: None)
-        try:
-            overlay.grab_set()
-        except Exception:
-            pass
 
         title = tk.Label(
             overlay,
@@ -898,10 +890,6 @@ class LocalPilotGUI:
         self.desktop_overlay_shown_at = time.monotonic()
         overlay.deiconify()
         overlay.lift()
-        try:
-            overlay.focus_force()
-        except tk.TclError:
-            pass
         overlay.update_idletasks()
         try:
             overlay.update()
@@ -926,10 +914,6 @@ class LocalPilotGUI:
                     self.root.after(remaining_ms, destroy_overlay)
                     self.desktop_overlay_shown_at = None
                     return
-                try:
-                    self.desktop_overlay.grab_release()
-                except Exception:
-                    pass
                 self.desktop_overlay.destroy()
             self.desktop_overlay = None
             self.desktop_overlay_action_label = None

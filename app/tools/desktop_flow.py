@@ -122,40 +122,15 @@ class DesktopExecutionFlow:
         if query:
             search_url = self._build_google_search_url(query, images="image" in lowered)
             expected_terms = [term for term in self._split_terms(query)[:3] if term]
-            description = f"Search Google for {query!r}"
+            description = f"Open Google search results for {query!r}"
             if "image" in lowered:
                 description += " in Images"
             return [
                 PlannedStep(
-                    name="open_google",
-                    description="Open Google in the default browser",
+                    name="open_search_results",
+                    description=description,
                     kind="open_url",
-                    value="https://www.google.com",
-                    expected_terms=["google"],
-                    vision_prompt="Check whether the browser is showing Google.",
-                ),
-                PlannedStep(
-                    name="focus_address_bar",
-                    description="Focus the browser address bar",
-                    kind="hotkey",
-                    value="ctrl+l",
-                ),
-                PlannedStep(
-                    name="type_search_url",
-                    description="Type the Google search URL into the address bar",
-                    kind="type_text",
                     value=search_url,
-                ),
-                PlannedStep(
-                    name="submit_search",
-                    description="Submit the search",
-                    kind="press_key",
-                    value="enter",
-                ),
-                PlannedStep(
-                    name="verify_search",
-                    description="Verify that Google search results are visible",
-                    kind="verify",
                     expected_terms=expected_terms or ["google"],
                     vision_prompt=f"Check whether this is a Google results page for {query}.",
                 ),
