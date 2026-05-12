@@ -66,10 +66,12 @@ class DesktopExecutionFlow:
             step_results.append({"step": step.description, "ok": ok, "detail": detail})
             last_snapshot = snapshot or last_snapshot
             if not ok:
+                verification = self._result_verification(last_snapshot, default_verified=False, default_reason=detail)
                 return {
                     "ok": False,
                     "content": self._format_summary(step_results, last_snapshot, success=False),
                     "steps": step_results,
+                    **verification,
                 }
 
         content = self._format_summary(step_results, last_snapshot, success=True)
@@ -79,10 +81,12 @@ class DesktopExecutionFlow:
                 "and copying a chosen browser image into a folder is not implemented yet. No image file was saved."
             )
 
+        verification = self._result_verification(last_snapshot, default_verified=True, default_reason="Desktop execution completed.")
         return {
             "ok": True,
             "content": content,
             "steps": step_results,
+            **verification,
         }
 
     def _build_plan(self, text: str) -> list[PlannedStep]:
@@ -194,19 +198,52 @@ class DesktopExecutionFlow:
         snapshot = self.inspect(include_vision=False)
         title = snapshot.get("active_window", {}).get("title", "").lower()
         expected_terms = [term.lower() for term in (step.expected_terms or [])]
-        if expected_terms and all(term in title for term in expected_terms):
-            return True, f"Verified via active window title: {snapshot['active_window'].get('title', '')}", snapshot
+        title_ok, title_reason, title_conflict = self._verify_active_window_title(step, title, expected_terms)
+        if title_ok:
+            detail = f"Verified via active window title: {snapshot['active_window'].get('title', '')}"
+            return True, detail, self._with_verification(
+                snapshot,
+                verified=True,
+                source="active_window_title",
+                reason=detail,
+            )
 
+        vision_ok = False
+        vision_reason = ""
         if step.vision_prompt:
             snapshot = self.inspect(include_vision=True, vision_prompt=step.vision_prompt)
-            analysis = snapshot.get("vision_analysis", "").lower()
-            if expected_terms and all(term in analysis for term in expected_terms):
-                return True, "Verified via screenshot analysis fallback.", snapshot
+            analysis = snapshot.get("vision_analysis", "")
+            vision_ok, vision_reason = self._verify_vision_analysis(step, analysis, expected_terms)
+            if vision_ok and not title_conflict:
+                detail = "Verified via screenshot analysis fallback."
+                return True, detail, self._with_verification(
+                    snapshot,
+                    verified=True,
+                    source="vision",
+                    reason=detail,
+                )
 
         detail = f"Could not verify step via UIA title"
         if step.vision_prompt:
             detail += " or screenshot analysis"
-        return False, detail + ".", snapshot
+        detail += "."
+
+        failure_reason = vision_reason or title_reason or detail
+        if title_conflict and title_reason and vision_reason:
+            failure_reason = f"{title_reason} {vision_reason}".strip()
+
+        if title_conflict:
+            failure_source = "active_window_title"
+        elif vision_reason:
+            failure_source = "vision"
+        else:
+            failure_source = "active_window_title" if title_reason else "vision"
+        return False, detail, self._with_verification(
+            snapshot,
+            verified=False,
+            source=failure_source,
+            reason=failure_reason,
+        )
 
     def inspect(self, include_vision: bool = False, vision_prompt: str | None = None) -> dict[str, Any]:
         active_window = get_active_window_title()
@@ -228,6 +265,116 @@ class DesktopExecutionFlow:
                     screenshot["path"],
                 )
         return snapshot
+
+    def _verify_active_window_title(
+        self,
+        step: PlannedStep,
+        title: str,
+        expected_terms: list[str],
+    ) -> tuple[bool, str, bool]:
+        if not title:
+            return False, "Active window title was unavailable.", False
+
+        if self._is_browser_verification_step(step):
+            if "discord" in title:
+                return False, "Active window stayed on Discord instead of the expected browser page.", True
+            browser_markers = ("google", "chrome", "edge", "firefox", "brave", "browser", "github")
+            if not any(marker in title for marker in browser_markers):
+                return False, "Active window title did not indicate the expected browser page.", True
+            if expected_terms and all(term in title for term in expected_terms):
+                return True, "Active window title confirmed the expected browser page.", False
+            return False, "Active window title did not confirm the requested Google query.", False
+
+        if expected_terms and all(term in title for term in expected_terms):
+            return True, "Active window title confirmed the expected page.", False
+        return False, "Active window title did not confirm the expected page.", False
+
+    def _verify_vision_analysis(self, step: PlannedStep, analysis: str, expected_terms: list[str]) -> tuple[bool, str]:
+        lowered = analysis.lower().strip()
+        if not lowered:
+            return False, "Vision returned no diagnostic text."
+        if self._is_negative_vision_response(lowered):
+            return False, f"Vision reported a mismatch: {analysis}"
+
+        if self._is_browser_verification_step(step):
+            positive_browser_markers = (
+                "google results",
+                "results page",
+                "search results",
+                "google search",
+                "google homepage",
+                "browser is showing",
+            )
+            if not any(marker in lowered for marker in positive_browser_markers):
+                return False, "Vision did not positively confirm the expected Google page."
+            if expected_terms and not all(term in lowered for term in expected_terms):
+                return False, "Vision did not positively confirm the requested Google query."
+            return True, "Vision positively confirmed the expected Google page."
+
+        if expected_terms and all(term in lowered for term in expected_terms):
+            return True, "Vision positively confirmed the expected page."
+        return False, "Vision did not positively confirm the expected page."
+
+    def _is_negative_vision_response(self, lowered: str) -> bool:
+        negative_patterns = (
+            r"^\s*no[,\s]",
+            r"\bnot a google results page\b",
+            r"\bnot the expected\b",
+            r"\bdoes not show\b",
+            r"\bnot showing\b",
+            r"\bis not\b",
+            r"\binstead\b",
+            r"\brather than\b",
+            r"\bmismatch\b",
+        )
+        return any(re.search(pattern, lowered) for pattern in negative_patterns)
+
+    def _is_browser_verification_step(self, step: PlannedStep) -> bool:
+        if step.name == "verify_search":
+            return True
+        text = f"{step.description} {step.vision_prompt or ''}".lower()
+        return "google" in text or "browser" in text
+
+    def _with_verification(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        verified: bool,
+        source: str,
+        reason: str,
+    ) -> dict[str, Any]:
+        snapshot["verification"] = {
+            "verified": verified,
+            "verification_source": source,
+            "reason": reason,
+            "active_window_title": snapshot.get("active_window", {}).get("title", ""),
+            "vision_summary": snapshot.get("vision_analysis", ""),
+        }
+        return snapshot
+
+    def _result_verification(
+        self,
+        snapshot: dict[str, Any] | None,
+        *,
+        default_verified: bool,
+        default_reason: str,
+    ) -> dict[str, Any]:
+        if snapshot is None:
+            return {
+                "verified": default_verified,
+                "verification_source": "none",
+                "reason": default_reason,
+                "active_window_title": "",
+                "vision_summary": "",
+            }
+        verification = snapshot.get("verification", {})
+        return {
+            "verified": verification.get("verified", default_verified),
+            "verification_source": verification.get("verification_source", "none"),
+            "reason": verification.get("reason", default_reason),
+            "active_window_title": verification.get("active_window_title", snapshot.get("active_window", {}).get("title", "")),
+            "vision_summary": verification.get("vision_summary", snapshot.get("vision_analysis", "")),
+        }
 
     def _format_summary(
         self,
