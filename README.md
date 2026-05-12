@@ -45,6 +45,12 @@ Optional models:
 powershell -ExecutionPolicy Bypass -File scripts/install_optional_models.ps1
 ```
 
+Optional Gemma 4 comparison models:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_optional_gemma4.ps1
+```
+
 RTX 3060 tuning:
 
 ```powershell
@@ -81,6 +87,12 @@ Benchmark:
 powershell -ExecutionPolicy Bypass -File scripts/benchmark_models.ps1
 ```
 
+Gemma 4 comparison:
+
+```text
+model compare gemma4
+```
+
 ## Required Ollama Models
 
 - Main reasoning / chat role: `qwen3:8b`
@@ -105,6 +117,8 @@ LocalPilot keeps reasoning/chat, coding, and visual analysis separate by default
 - `granite3.3:2b` is reserved for fast routing experiments
 - `nomic-embed-text` is reserved for future local memory search
 - `qwen3:30b` remains available as an optional slow high-quality mode and is not the default
+- `gemma4:e4b` is available as an optional fast multimodal/general comparison model
+- `gemma4:latest` is available as an optional quality comparison model if it runs well on this machine
 
 LocalPilot expects a reachable Ollama API, typically at `http://127.0.0.1:11434`.
 

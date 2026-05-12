@@ -40,6 +40,11 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_model_benchmark(),
             }
+        if lowered == "model compare gemma4":
+            return {
+                "ok": True,
+                "message": self.app.describe_model_compare("gemma4"),
+            }
         if lowered == "model doctor":
             return {
                 "ok": True,

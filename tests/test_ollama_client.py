@@ -22,6 +22,10 @@ def load_install_script() -> str:
     return Path("scripts/install_recommended_models.ps1").read_text(encoding="utf-8")
 
 
+def load_optional_gemma_install_script() -> str:
+    return Path("scripts/install_optional_gemma4.ps1").read_text(encoding="utf-8")
+
+
 def test_model_profiles_default_main_is_qwen3_8b():
     profiles = load_model_profiles()
 
@@ -33,6 +37,13 @@ def test_model_profiles_keep_quality_slow_role():
     profiles = load_model_profiles()
 
     assert profiles["quality_slow"]["model"] == "qwen3:30b"
+
+
+def test_model_profiles_include_optional_gemma4_comparison_roles():
+    profiles = load_model_profiles()
+
+    assert profiles["gemma4_fast"]["model"] == "gemma4:e4b"
+    assert profiles["gemma4_quality"]["model"] == "gemma4:latest"
 
 
 def test_performance_profiles_default_is_rtx3060_balanced():
@@ -384,6 +395,111 @@ def test_default_install_script_keeps_qwen3_30b_optional():
 
     assert '"qwen3:30b"' not in script
     assert "Optional slow quality mode is not included here: qwen3:30b" in script
+
+
+def test_optional_gemma_install_script_pulls_optional_models_only():
+    script = load_optional_gemma_install_script()
+
+    assert '"gemma4:e4b"' in script
+    assert '"gemma4"' in script
+    assert "qwen3:30b" not in script
+
+
+def test_model_compare_report_handles_ollama_unavailable():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=Path("workspace") / "debug_views",
+    )
+    client.is_server_available = lambda: False
+
+    report = client.build_model_compare_report("gemma4")
+
+    assert "Model compare: gemma4" in report
+    assert "Current defaults remain unchanged" in report
+    assert "Ollama is unavailable" in report
+
+
+def test_model_compare_report_warns_when_gemma_fast_is_missing():
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=Path("workspace") / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: [
+        "qwen3:8b",
+        "qwen2.5-coder:14b-instruct-q3_K_M",
+        "qwen2.5vl:7b",
+        "granite3.3:2b",
+    ]
+
+    report = client.build_model_compare_report("gemma4")
+
+    assert "gemma4:e4b is not installed" in report
+    assert "install_optional_gemma4.ps1" in report
+
+
+def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: [
+        "qwen3:8b",
+        "qwen2.5-coder:14b-instruct-q3_K_M",
+        "qwen2.5vl:7b",
+        "granite3.3:2b",
+        "gemma4:e4b",
+        "gemma4:latest",
+    ]
+    client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: {
+        "ok": True,
+        "model": model_name,
+        "eval_count": 24,
+        "eval_duration": 1_000_000_000,
+        "load_duration": 200_000_000,
+        "tokens_per_second": 24.0,
+        "text": (
+            "Use GitHub issue verification, confirm the page, and refuse destructive requests."
+            if "gemma4" in model_name or model_name == "qwen3:8b"
+            else "def add_numbers(a, b): return a + b"
+        ),
+    }
+    client._run_vision_request = lambda **kwargs: {
+        "ok": True,
+        "model": kwargs.get("model_name_override") or "qwen2.5vl:7b",
+        "text": "The screen shows a GitHub issue page with a button and visible text.",
+        "eval_count": 18,
+        "eval_duration": 1_000_000_000,
+        "load_duration": 150_000_000,
+    }
+
+    report = client.build_model_compare_report("gemma4")
+
+    assert "- Planning comparison:" in report
+    assert "gemma fast planning" in report
+    assert "gemma quality planning" in report
+    assert "qwen vision" in report
+    assert "gemma fast vision" in report
+    assert "Page understanding note:" in report
 
 
 def test_prepare_role_activation_unloads_previous_heavy_role_when_enabled():

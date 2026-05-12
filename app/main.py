@@ -139,6 +139,9 @@ class LocalPilotApp:
             performance_profile_name=self._active_performance_profile_name(),
         )
 
+    def describe_model_compare(self, target: str) -> str:
+        return self.ollama.build_model_compare_report(target)
+
     def describe_model_doctor(self) -> str:
         default_role = self.settings.get("active_model_role", self.model_profiles.get("default_role", "main"))
         return self.ollama.build_model_doctor_report(

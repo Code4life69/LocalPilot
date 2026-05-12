@@ -56,5 +56,17 @@
     "num_ctx": 4096,
     "temperature": 0.3,
     "description": "Optional stable fallback general model"
+  },
+  "gemma4_fast": {
+    "model": "gemma4:e4b",
+    "num_ctx": 4096,
+    "temperature": 0.2,
+    "description": "Optional fast Gemma 4 multimodal/general comparison model"
+  },
+  "gemma4_quality": {
+    "model": "gemma4:latest",
+    "num_ctx": 4096,
+    "temperature": 0.25,
+    "description": "Optional higher-quality Gemma 4 comparison model if it runs well"
   }
 }

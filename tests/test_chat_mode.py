@@ -54,6 +54,26 @@ def test_model_benchmark_command_returns_status_text(tmp_path):
     assert "Model benchmark" in result["message"]
 
 
+def test_model_compare_gemma4_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_status=lambda: "unused",
+        describe_model_benchmark=lambda: "unused",
+        describe_model_compare=lambda target: f"Model compare: {target}",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model compare gemma4"})
+
+    assert result["ok"]
+    assert "Model compare: gemma4" in result["message"]
+
+
 def test_model_unload_command_returns_status_text(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)
