@@ -24,6 +24,15 @@ class DummyApp:
         self.root_dir = Path(root_dir)
         self.logger = DummyLogger()
         self.safety = DummySafety()
+        self.settings = {
+            "professional_build": {
+                "enabled": True,
+                "max_passes": 3,
+                "allow_web_research": True,
+                "require_acceptance_checklist": True,
+                "stop_on_failed_verification": True,
+            }
+        }
         self.system_prompt = "system prompt"
         self.ollama = type(
             "StubOllama",
@@ -146,6 +155,7 @@ def test_supported_app_kind_detection():
     assert mode._detect_supported_app_kind("make me a notepad app") == "notepad"
     assert mode._detect_supported_app_kind("make me a timer app") == "timer"
     assert mode._detect_supported_app_kind("make me a calculator app") == "calculator"
+    assert mode._detect_supported_app_kind("make me a helper script tool") == "script"
 
 
 def test_app_scaffold_request_requires_real_app_language():
@@ -222,3 +232,112 @@ def test_natural_language_file_creation_asks_before_overwrite(tmp_path):
     assert result["ok"] is False
     assert result["error"] == "Write cancelled by user."
     assert target.read_text(encoding="utf-8") == "existing"
+
+
+def test_professional_build_creates_acceptance_checklist_and_verifies(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle({"user_text": "professional build make me a notepad app with a gui and double click starter"})
+
+    assert result["ok"] is True
+    assert result["status"] == "completed"
+    assert result["acceptance_checklist"]
+    assert any(item["name"] == "Acceptance checklist created" for item in result["acceptance_checklist"])
+    assert result["verification_history"]
+    assert result["verification_history"][0]["checks_performed"]
+    assert result["project_path"].startswith(str(tmp_path / "workspace" / "generated_apps"))
+    assert "Professional build completed." in result["message"]
+    assert "Known limitations:" in result["message"]
+
+
+def test_professional_build_does_not_claim_done_if_verification_fails(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    original_verify = mode._run_professional_verification
+
+    def failing_verify(*args, **kwargs):
+        result = original_verify(*args, **kwargs)
+        result["ok"] = False
+        result["tests_or_checks_passed"] = False
+        result["error"] = "Syntax verification failed for generated project."
+        return result
+
+    mode._run_professional_verification = failing_verify
+    result = mode.handle({"user_text": "professional build make me a timer app with a gui and double click starter"})
+
+    assert result["ok"] is False
+    assert result["status"] == "verification_failed"
+    assert "Professional build stopped after a failed verification step." in result["message"]
+    assert "Syntax verification failed for generated project." in result["message"]
+
+
+def test_professional_build_stops_after_max_passes(tmp_path):
+    app = DummyApp(tmp_path)
+    app.settings["professional_build"]["max_passes"] = 2
+    mode = CodeMode(app)
+
+    original_verify = mode._run_professional_verification
+    mode._run_professional_verification = original_verify
+
+    def failing_checklist(*args, **kwargs):
+        checklist = mode._build_acceptance_checklist_original(*args, **kwargs)
+        checklist[-1] = {
+            "name": "Artificial blocker",
+            "passed": False,
+            "detail": "Keep iterating for the test.",
+        }
+        return checklist
+
+    mode._build_acceptance_checklist_original = mode._build_acceptance_checklist
+    mode._build_acceptance_checklist = failing_checklist
+
+    result = mode.handle({"user_text": "professional build make me a calculator app with a gui and double click starter"})
+
+    assert result["ok"] is False
+    assert result["status"] == "stopped_at_max_passes"
+    assert result["passes_completed"] == 2
+
+
+def test_professional_build_respects_overwrite_approval(tmp_path):
+    app = DummyApp(tmp_path)
+    app.ask_approval = lambda prompt: False
+    mode = CodeMode(app)
+    existing_dir = tmp_path / "workspace" / "generated_apps" / "ExistingApp"
+    existing_dir.mkdir(parents=True, exist_ok=True)
+    (existing_dir / "main.py").write_text("print('existing')\n", encoding="utf-8")
+    (existing_dir / "Run Notepad.bat").write_text("@echo off\n", encoding="utf-8")
+    (existing_dir / "README.txt").write_text("existing\n", encoding="utf-8")
+
+    result = mode.handle(
+        {
+            "user_text": f'professional build make me a notepad app with a gui and double click starter in "{existing_dir}"'
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "Professional build cancelled by user."
+
+
+def test_professional_build_can_request_research(tmp_path, monkeypatch):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+    calls = []
+
+    def fake_search(query, max_results=3):
+        calls.append(query)
+        return {
+            "ok": True,
+            "results": [
+                {"title": "sqlite3 — Python documentation", "url": "https://docs.python.org/3/library/sqlite3.html", "snippet": "Official sqlite3 docs."}
+            ],
+        }
+
+    monkeypatch.setattr("app.modes.code_mode.search_web", fake_search)
+
+    result = mode.handle({"user_text": "professional build make me a script tool that uses sqlite to store notes"})
+
+    assert result["status"] == "completed"
+    assert calls
+    assert "sqlite3" in result["research"]["summary"].lower()

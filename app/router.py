@@ -78,6 +78,8 @@ class KeywordRouter:
 
     def classify(self, text: str) -> str:
         lowered = text.lower().strip()
+        if lowered.startswith("professional build ") or lowered.startswith("build this professionally"):
+            return "code"
         if self._looks_like_desktop_task_request(lowered):
             return "desktop"
         if self._looks_like_code_verification_request(lowered):

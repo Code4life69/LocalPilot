@@ -45,5 +45,12 @@
     "shell_requires_confirmation": true,
     "desktop_requires_confirmation": true,
     "overwrite_requires_confirmation": true
+  },
+  "professional_build": {
+    "enabled": true,
+    "max_passes": 3,
+    "allow_web_research": true,
+    "require_acceptance_checklist": true,
+    "stop_on_failed_verification": true
   }
 }

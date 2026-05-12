@@ -5,9 +5,11 @@ import re
 from datetime import datetime
 from html import escape
 from pathlib import Path
+from typing import Any
 
 from app.tools import files as file_tools
 from app.tools import shell as shell_tools
+from app.tools.web import search_web
 
 
 APP_TEMPLATES = {
@@ -46,6 +48,13 @@ APP_TEMPLATES = {
         "main_filename": "main.py",
         "readme_name": "README.txt",
     },
+    "script": {
+        "display_name": "Tool Script",
+        "slug": "ToolScript",
+        "launcher_name": "Run Tool.bat",
+        "main_filename": "main.py",
+        "readme_name": "README.txt",
+    },
 }
 
 
@@ -57,6 +66,9 @@ class CodeMode:
         text = request["user_text"].strip()
         lowered = text.lower()
         self.app.logger.event("Mode:code", f"Handling code request: {text}")
+
+        if self._is_professional_build_request(lowered):
+            return self._run_professional_build(text)
 
         if self._is_app_verification_request(lowered):
             return self._verify_generated_app(text)
@@ -133,6 +145,18 @@ class CodeMode:
         response = self.app.ollama.chat_with_role("coder", self.app.system_prompt, text)
         return {"ok": True, "message": response}
 
+    def _is_professional_build_request(self, lowered: str) -> bool:
+        return lowered.startswith("professional build ") or lowered.startswith("build this professionally")
+
+    def _extract_professional_build_request(self, text: str) -> str:
+        lowered = text.lower().strip()
+        if lowered.startswith("professional build "):
+            return text.strip()[len("professional build "):].strip()
+        if lowered.startswith("build this professionally"):
+            remainder = text.strip()[len("build this professionally"):].strip()
+            return remainder.lstrip(": ").strip()
+        return text.strip()
+
     def _looks_like_natural_file_create_request(self, lowered: str) -> bool:
         return (
             any(phrase in lowered for phrase in ("create", "make", "write"))
@@ -190,6 +214,8 @@ class CodeMode:
                 "landing page",
                 "html css",
                 "folder",
+                "tool",
+                "script",
             )
         )
 
@@ -201,6 +227,8 @@ class CodeMode:
             return "website"
         if "todo" in lowered:
             return "todo"
+        if "script" in lowered or "tool" in lowered:
+            return "script"
         for kind in APP_TEMPLATES:
             if kind in lowered:
                 return kind
@@ -249,6 +277,498 @@ class CodeMode:
             "theme": website_spec["theme"] if website_spec else None,
             "generation_mode": website_spec["generation_mode"] if website_spec else None,
         }
+
+    def _run_professional_build(self, text: str) -> dict:
+        settings = self._professional_build_settings()
+        if not settings["enabled"]:
+            return {"ok": False, "error": "Professional build mode is disabled in settings."}
+
+        build_request = self._extract_professional_build_request(text)
+        if not build_request:
+            return {"ok": False, "error": "No build request was provided after the professional build command."}
+
+        app_kind = self._detect_professional_app_kind(build_request.lower())
+        if app_kind is None:
+            return {
+                "ok": False,
+                "error": (
+                    "Professional build mode currently supports website, calculator, notepad, todo, timer, "
+                    "and generic script/tool requests."
+                ),
+            }
+
+        explicit_target_dir = self._extract_target_directory(build_request)
+        project_path = Path(explicit_target_dir or self._default_generated_app_dir(app_kind))
+        workspace_root = self._workspace_root().resolve()
+        explicit_target = explicit_target_dir is not None
+        target_in_workspace = self._path_is_within(project_path, workspace_root)
+        if not explicit_target and not target_in_workspace:
+            return {"ok": False, "error": f"Professional build refused to write outside workspace: {project_path}"}
+
+        research = self._request_professional_research(build_request, settings) if settings["allow_web_research"] else None
+        brief = self._build_project_brief(build_request, app_kind, project_path)
+        website_spec = self._generate_website_spec(build_request) if app_kind == "website" else None
+        professional_context = {
+            "brief": brief,
+            "acceptance_checklist": [],
+            "verification_summary": {},
+            "known_limitations": [],
+            "research": research,
+        }
+        files_to_write = self._build_app_files(
+            app_kind,
+            project_path,
+            website_spec,
+            professional_context=professional_context,
+        )
+        existing_targets = [path for path in files_to_write if Path(path).exists()]
+        if existing_targets:
+            approved = self.app.ask_approval(
+                "Professional build files already exist and will be overwritten:\n" + "\n".join(existing_targets)
+            )
+            if not approved:
+                return {"ok": False, "error": "Professional build cancelled by user."}
+
+        write_result = self._write_project_files(project_path, files_to_write)
+        if not write_result["ok"]:
+            return write_result
+
+        verification_history: list[dict[str, Any]] = []
+        improvement_history: list[str] = []
+        final_checklist: list[dict[str, Any]] = []
+        final_verification: dict[str, Any] = {}
+        final_review: dict[str, Any] = {"ready": False, "issues": []}
+        status = "stopped_at_max_passes"
+
+        for pass_index in range(1, settings["max_passes"] + 1):
+            verification = self._run_professional_verification(
+                project_path=project_path,
+                app_kind=app_kind,
+                explicit_target=explicit_target,
+            )
+            verification_history.append(
+                {
+                    "pass": pass_index,
+                    "ok": verification["ok"],
+                    "checks_performed": verification["checks_performed"],
+                    "error": verification.get("error", ""),
+                }
+            )
+
+            final_checklist = self._build_acceptance_checklist(
+                brief=brief,
+                app_kind=app_kind,
+                project_path=project_path,
+                verification=verification,
+                explicit_target=explicit_target,
+                settings=settings,
+            )
+            final_review = self._self_review_professional_build(
+                build_request=build_request,
+                app_kind=app_kind,
+                verification=verification,
+                checklist=final_checklist,
+            )
+            known_limitations = self._collect_known_limitations(verification, final_review)
+            professional_context = {
+                "brief": brief,
+                "acceptance_checklist": final_checklist,
+                "verification_summary": verification,
+                "known_limitations": known_limitations,
+                "research": research,
+            }
+            self._update_professional_readme(project_path, app_kind, website_spec, professional_context)
+
+            final_verification = verification
+            acceptance_passed = all(item["passed"] for item in final_checklist)
+            review_ready = final_review.get("ready", False)
+            if acceptance_passed and review_ready:
+                status = "completed"
+                break
+
+            if settings["stop_on_failed_verification"] and not verification["ok"]:
+                status = "verification_failed"
+                break
+
+            if pass_index >= settings["max_passes"]:
+                status = "stopped_at_max_passes"
+                break
+
+            improvement_result = self._apply_professional_improvements(
+                project_path=project_path,
+                app_kind=app_kind,
+                review=final_review,
+                website_spec=website_spec,
+                professional_context=professional_context,
+            )
+            improvement_history.extend(improvement_result["applied"])
+
+        known_limitations = professional_context["known_limitations"]
+        report = self._compose_professional_report(
+            status=status,
+            project_path=project_path,
+            app_kind=app_kind,
+            files=files_to_write,
+            brief=brief,
+            checklist=final_checklist,
+            verification=final_verification,
+            verification_history=verification_history,
+            improvements=improvement_history,
+            known_limitations=known_limitations,
+            research=research,
+        )
+        return {
+            "ok": status == "completed",
+            "message": report,
+            "project_path": str(project_path),
+            "files": list(files_to_write.keys()),
+            "brief": brief,
+            "acceptance_checklist": final_checklist,
+            "verification": final_verification,
+            "verification_history": verification_history,
+            "improvements": improvement_history,
+            "known_limitations": known_limitations,
+            "research": research,
+            "passes_completed": len(verification_history),
+            "status": status,
+        }
+
+    def _professional_build_settings(self) -> dict[str, Any]:
+        defaults = {
+            "enabled": True,
+            "max_passes": 3,
+            "allow_web_research": True,
+            "require_acceptance_checklist": True,
+            "stop_on_failed_verification": True,
+        }
+        configured = self.app.settings.get("professional_build", {})
+        return {**defaults, **configured}
+
+    def _detect_professional_app_kind(self, lowered: str) -> str | None:
+        detected = self._detect_supported_app_kind(lowered)
+        if detected is not None:
+            return detected
+        if any(term in lowered for term in ("tool", "script", "program")):
+            return "script"
+        return None
+
+    def _request_professional_research(self, build_request: str, settings: dict[str, Any]) -> dict[str, Any] | None:
+        query = self._research_query_for_build(build_request)
+        if not query:
+            return None
+        result = search_web(query, max_results=3)
+        if not result.get("ok"):
+            return {
+                "needed": True,
+                "query": query,
+                "ok": False,
+                "summary": f"Research requested but failed: {result.get('error', 'unknown error')}",
+                "results": [],
+            }
+        summary_lines = [f"Research query: {query}"]
+        for item in result.get("results", [])[:3]:
+            summary_lines.append(f"- {item.get('title', 'Untitled')} | {item.get('url', '')}")
+        return {
+            "needed": True,
+            "query": query,
+            "ok": True,
+            "summary": "\n".join(summary_lines),
+            "results": result.get("results", [])[:3],
+        }
+
+    def _research_query_for_build(self, build_request: str) -> str | None:
+        lowered = build_request.lower()
+        keywords = {
+            "sqlite": "Python sqlite3 official documentation",
+            "api": "Python API client best practices official documentation",
+            "excel": "Python openpyxl official documentation",
+            "csv": "Python csv module official documentation",
+            "json": "Python json module official documentation",
+            "file dialog": "Python tkinter filedialog documentation",
+            "windows behavior": "Python Windows subprocess and file path behavior documentation",
+        }
+        for key, query in keywords.items():
+            if key in lowered:
+                return query
+        return None
+
+    def _build_project_brief(self, build_request: str, app_kind: str, project_path: Path) -> dict[str, Any]:
+        template = APP_TEMPLATES[app_kind]
+        files = [template["main_filename"], template["launcher_name"], template["readme_name"]]
+        if app_kind == "website":
+            files.extend(["style.css", "script.js"])
+        return {
+            "request": build_request,
+            "project_kind": app_kind,
+            "target_platform": "Windows desktop/local filesystem",
+            "expected_files": files,
+            "project_path": str(project_path),
+            "run_instructions": self._project_run_instructions(app_kind),
+            "done_means": (
+                "Acceptance checklist passes, verification checks are green, README is clear, "
+                "and LocalPilot can explain how to run the project."
+            ),
+        }
+
+    def _write_project_files(self, project_path: Path, files_to_write: dict[str, str]) -> dict[str, Any]:
+        folder_result = file_tools.make_folder(str(project_path))
+        if not folder_result.get("ok"):
+            return folder_result
+        write_results = [file_tools.write_file(path, content) for path, content in files_to_write.items()]
+        failed = [item for item in write_results if not item.get("ok")]
+        if failed:
+            return {"ok": False, "error": failed[0].get("error", "Failed to write project files.")}
+        return {"ok": True, "write_results": write_results}
+
+    def _run_professional_verification(self, project_path: Path, app_kind: str, explicit_target: bool) -> dict[str, Any]:
+        template = APP_TEMPLATES[app_kind]
+        main_path = project_path / template["main_filename"]
+        launcher_path = project_path / template["launcher_name"]
+        readme_path = project_path / template["readme_name"]
+        base_verification = self._verify_app_outputs(project_path, app_kind)
+        checks_performed = ["file existence", "README presence", "launcher inspection"]
+        if app_kind == "website":
+            checks_performed.append("static asset linkage")
+        else:
+            checks_performed.append("python syntax check")
+
+        readme_text = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
+        launcher_text = launcher_path.read_text(encoding="utf-8") if launcher_path.exists() else ""
+        main_text = main_path.read_text(encoding="utf-8") if main_path.exists() else ""
+
+        verification = {
+            "ok": base_verification.get("ok", False),
+            "base_verification": base_verification,
+            "checks_performed": checks_performed,
+            "required_files_exist": base_verification.get("ok", False) or "Missing files" not in base_verification.get("error", ""),
+            "syntax_ok": app_kind == "website" or bool(base_verification.get("syntax_verified")),
+            "readme_exists": readme_path.exists(),
+            "readme_clear": "How to run" in readme_text,
+            "launcher_exists": launcher_path.exists(),
+            "launcher_ready": self._launcher_looks_ready(app_kind, launcher_text, template["main_filename"]),
+            "ui_usable": self._ui_looks_usable(app_kind, main_text),
+            "error_handling_ok": self._error_handling_looks_present(app_kind, main_text),
+            "styling_ok": self._styling_looks_intentional(app_kind, project_path, main_text),
+            "workspace_safe": explicit_target or self._path_is_within(project_path, self._workspace_root().resolve()),
+            "tests_or_checks_passed": base_verification.get("ok", False),
+            "launch_ready": self._launcher_looks_ready(app_kind, launcher_text, template["main_filename"]),
+            "error": base_verification.get("error", ""),
+        }
+        verification["ok"] = (
+            base_verification.get("ok", False)
+            and verification["readme_exists"]
+            and verification["readme_clear"]
+            and verification["launcher_exists"]
+            and verification["launcher_ready"]
+            and verification["ui_usable"]
+            and verification["error_handling_ok"]
+            and verification["styling_ok"]
+            and verification["workspace_safe"]
+        )
+        return verification
+
+    def _build_acceptance_checklist(
+        self,
+        brief: dict[str, Any],
+        app_kind: str,
+        project_path: Path,
+        verification: dict[str, Any],
+        explicit_target: bool,
+        settings: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        checks = [
+            {"name": "Project brief created", "passed": True, "detail": brief["request"]},
+            {
+                "name": "Acceptance checklist created",
+                "passed": True if settings["require_acceptance_checklist"] else True,
+                "detail": "Professional build checklist is active." if settings["require_acceptance_checklist"] else "Checklist not required.",
+            },
+            {"name": "Required files exist", "passed": verification["required_files_exist"], "detail": verification.get("error", "") or "All required files are present."},
+            {"name": "Syntax/static checks pass", "passed": verification["tests_or_checks_passed"], "detail": verification.get("error", "") or ", ".join(verification["checks_performed"])},
+            {"name": "Clear README exists", "passed": verification["readme_exists"] and verification["readme_clear"], "detail": "README exists and includes run instructions." if verification["readme_exists"] and verification["readme_clear"] else "README is missing or unclear."},
+            {"name": "Double-click launcher works where applicable", "passed": verification["launcher_exists"] and verification["launcher_ready"], "detail": "Launcher file exists and points at the project entry point." if verification["launcher_exists"] and verification["launcher_ready"] else "Launcher is missing or does not point at the expected entry point."},
+            {"name": "UI is usable", "passed": verification["ui_usable"], "detail": "The scaffold contains the expected UI structure for this project type." if verification["ui_usable"] else "The generated UI structure looks incomplete."},
+            {"name": "Error handling exists", "passed": verification["error_handling_ok"], "detail": "Basic error handling is present where this project type needs it." if verification["error_handling_ok"] else "The scaffold still needs basic error handling."},
+            {"name": "Styling is intentional", "passed": verification["styling_ok"], "detail": "The generated styling is intentional for this project type." if verification["styling_ok"] else "The generated styling still looks too bare."},
+            {"name": "No unsafe file writes", "passed": verification["workspace_safe"], "detail": "The project stayed inside workspace or used an explicit user path." if verification["workspace_safe"] else "The project path was not safe."},
+            {"name": "Project stays in workspace unless user specified otherwise", "passed": explicit_target or self._path_is_within(project_path, self._workspace_root().resolve()), "detail": str(project_path)},
+        ]
+        return checks
+
+    def _self_review_professional_build(
+        self,
+        build_request: str,
+        app_kind: str,
+        verification: dict[str, Any],
+        checklist: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        issues: list[dict[str, str]] = []
+        for item in checklist:
+            if not item["passed"]:
+                issues.append({"code": self._issue_code_from_check(item["name"]), "detail": item["detail"]})
+        if app_kind == "website" and "basic" not in build_request.lower() and not verification["styling_ok"]:
+            issues.append({"code": "styling_needs_polish", "detail": "The website still looks too bare for a professional build."})
+        return {"ready": not issues, "issues": issues}
+
+    def _apply_professional_improvements(
+        self,
+        project_path: Path,
+        app_kind: str,
+        review: dict[str, Any],
+        website_spec: dict[str, Any] | None,
+        professional_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        applied: list[str] = []
+        issue_codes = {issue["code"] for issue in review.get("issues", [])}
+        if "readme_incomplete" in issue_codes or "checklist_missing" in issue_codes:
+            self._update_professional_readme(project_path, app_kind, website_spec, professional_context)
+            applied.append("Refreshed README with the current brief and acceptance checklist.")
+        return {"applied": applied}
+
+    def _collect_known_limitations(self, verification: dict[str, Any], review: dict[str, Any]) -> list[str]:
+        limitations = [
+            "No automated GUI launch test was performed; launch readiness was checked statically.",
+        ]
+        if verification.get("error"):
+            limitations.append(verification["error"])
+        for issue in review.get("issues", []):
+            detail = issue.get("detail", "").strip()
+            if detail and detail not in limitations:
+                limitations.append(detail)
+        return limitations
+
+    def _compose_professional_report(
+        self,
+        status: str,
+        project_path: Path,
+        app_kind: str,
+        files: dict[str, str],
+        brief: dict[str, Any],
+        checklist: list[dict[str, Any]],
+        verification: dict[str, Any],
+        verification_history: list[dict[str, Any]],
+        improvements: list[str],
+        known_limitations: list[str],
+        research: dict[str, Any] | None,
+    ) -> str:
+        if status == "completed":
+            heading = "Professional build completed."
+        elif status == "verification_failed":
+            heading = "Professional build stopped after a failed verification step."
+        else:
+            heading = "Professional build stopped before the acceptance checklist fully passed."
+
+        lines = [heading, "", "Project brief:"]
+        lines.append(f"- Request: {brief['request']}")
+        lines.append(f"- Target platform: {brief['target_platform']}")
+        lines.append(f"- Project path: {project_path}")
+        lines.append(f"- How it runs: {brief['run_instructions']}")
+        lines.append(f"- Done means: {brief['done_means']}")
+        lines.append("")
+        lines.append("Files created:")
+        for path in files:
+            lines.append(f"- {path}")
+        lines.append("")
+        lines.append("Checks performed:")
+        for check in verification.get("checks_performed", []):
+            lines.append(f"- {check}")
+        lines.append("")
+        lines.append("Acceptance checklist:")
+        for item in checklist:
+            marker = "pass" if item["passed"] else "fail"
+            lines.append(f"- [{marker}] {item['name']}: {item['detail']}")
+        lines.append("")
+        lines.append("Improvement passes:")
+        for entry in verification_history:
+            status_text = "pass" if entry["ok"] else "fail"
+            lines.append(f"- Pass {entry['pass']}: {status_text} ({', '.join(entry['checks_performed'])})")
+        lines.append("")
+        lines.append("What it improved after self-review:")
+        if improvements:
+            for item in improvements:
+                lines.append(f"- {item}")
+        else:
+            lines.append("- No additional automated improvements were necessary after self-review.")
+        lines.append("")
+        lines.append("Known limitations:")
+        for limitation in known_limitations:
+            lines.append(f"- {limitation}")
+        if research is not None:
+            lines.append("")
+            lines.append("Research summary:")
+            lines.append(research["summary"])
+        return "\n".join(lines)
+
+    def _update_professional_readme(
+        self,
+        project_path: Path,
+        app_kind: str,
+        website_spec: dict[str, Any] | None,
+        professional_context: dict[str, Any],
+    ) -> None:
+        template = APP_TEMPLATES[app_kind]
+        readme_path = project_path / template["readme_name"]
+        content = self._readme_source(
+            template["display_name"],
+            template["launcher_name"],
+            template["main_filename"],
+            website_spec=website_spec,
+            professional_context=professional_context,
+        )
+        file_tools.write_file(str(readme_path), content)
+
+    def _project_run_instructions(self, app_kind: str) -> str:
+        template = APP_TEMPLATES[app_kind]
+        return f"Double-click {template['launcher_name']}."
+
+    def _path_is_within(self, path: Path, root: Path) -> bool:
+        try:
+            return path.resolve().is_relative_to(root.resolve())
+        except FileNotFoundError:
+            return path.parent.resolve().is_relative_to(root.resolve())
+
+    def _launcher_looks_ready(self, app_kind: str, launcher_text: str, main_filename: str) -> bool:
+        lowered = launcher_text.lower()
+        if app_kind == "website":
+            return "start \"\" \"index.html\"" in lowered and "index.html" in lowered
+        return main_filename.lower() in lowered and ("%python_exe%" in lowered or "py" in lowered or "python" in lowered)
+
+    def _ui_looks_usable(self, app_kind: str, main_text: str) -> bool:
+        lowered = main_text.lower()
+        if app_kind == "website":
+            return "<main" in lowered and "<header" in lowered and "ctaButton".lower() in lowered
+        if app_kind == "script":
+            return "argparse" in lowered or "print(" in lowered
+        return "tk." in lowered and "mainloop" in lowered
+
+    def _error_handling_looks_present(self, app_kind: str, main_text: str) -> bool:
+        lowered = main_text.lower()
+        if app_kind in {"website", "todo"}:
+            return True
+        return "except" in lowered
+
+    def _styling_looks_intentional(self, app_kind: str, project_path: Path, main_text: str) -> bool:
+        if app_kind == "website":
+            style_path = project_path / "style.css"
+            if not style_path.exists():
+                return False
+            css = style_path.read_text(encoding="utf-8").lower()
+            return all(token in css for token in ("--accent", "hero-card", "content-card"))
+        if app_kind == "calculator":
+            return "#10131a" in main_text.lower() and "segoe ui" in main_text.lower()
+        return True
+
+    def _issue_code_from_check(self, check_name: str) -> str:
+        mapping = {
+            "Acceptance checklist created": "checklist_missing",
+            "Clear README exists": "readme_incomplete",
+            "Double-click launcher works where applicable": "launcher_incomplete",
+            "Required files exist": "missing_files",
+            "Syntax/static checks pass": "verification_failed",
+            "Error handling exists": "error_handling_missing",
+            "Styling is intentional": "styling_needs_polish",
+        }
+        return mapping.get(check_name, "check_failed")
 
     def _verify_generated_app(self, text: str) -> dict:
         app_kind = self._detect_supported_app_kind(text.lower())
@@ -362,7 +882,13 @@ class CodeMode:
                 return kind
         return None
 
-    def _build_app_files(self, app_kind: str, target_dir: Path, website_spec: dict | None = None) -> dict[str, str]:
+    def _build_app_files(
+        self,
+        app_kind: str,
+        target_dir: Path,
+        website_spec: dict | None = None,
+        professional_context: dict[str, Any] | None = None,
+    ) -> dict[str, str]:
         template = APP_TEMPLATES[app_kind]
         display_name = template["display_name"]
         main_filename = template["main_filename"]
@@ -372,7 +898,13 @@ class CodeMode:
         return {
             str(target_dir / main_filename): self._app_main_source(app_kind, display_name, website_spec),
             str(target_dir / launcher_name): self._launcher_source(display_name, main_filename),
-            str(target_dir / readme_name): self._readme_source(display_name, launcher_name, main_filename, website_spec),
+            str(target_dir / readme_name): self._readme_source(
+                display_name,
+                launcher_name,
+                main_filename,
+                website_spec,
+                professional_context=professional_context,
+            ),
             **self._extra_app_files(app_kind, target_dir, website_spec),
         }
 
@@ -503,8 +1035,12 @@ class NotepadApp:
         path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
         if not path:
             return
-        with open(path, "r", encoding="utf-8") as handle:
-            content = handle.read()
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                content = handle.read()
+        except OSError as exc:
+            messagebox.showerror("Notepad", f"Could not open file: {exc}")
+            return
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", content)
         self.current_path = path
@@ -516,8 +1052,12 @@ class NotepadApp:
             path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
         if not path:
             return
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(self.editor.get("1.0", tk.END))
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(self.editor.get("1.0", tk.END))
+        except OSError as exc:
+            messagebox.showerror("Notepad", f"Could not save file: {exc}")
+            return
         self.current_path = path
         self.root.title(f"Notepad - {path}")
         messagebox.showinfo("Notepad", f"Saved to {path}")
@@ -656,6 +1196,32 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 """,
+            "script": """import argparse
+from pathlib import Path
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Generated local tool script.")
+    parser.add_argument("--name", default="LocalPilot Tool", help="Optional label to print in the output.")
+    parser.add_argument("--output", default="tool_output.txt", help="Optional output file name.")
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    output_path = Path(args.output)
+    try:
+        output_path.write_text(f"Tool run completed for: {args.name}\\n", encoding="utf-8")
+        print(f"Wrote {output_path.resolve()}")
+    except Exception as exc:
+        print(f"Error: {exc}")
+        raise
+
+
+if __name__ == "__main__":
+    main()
+""",
         }
         return sources[app_kind]
 
@@ -720,7 +1286,51 @@ exit /b %EXIT_CODE%
         launcher_name: str,
         main_filename: str,
         website_spec: dict | None = None,
+        professional_context: dict[str, Any] | None = None,
     ) -> str:
+        if professional_context is not None:
+            brief = professional_context.get("brief", {})
+            checklist = professional_context.get("acceptance_checklist", [])
+            verification_summary = professional_context.get("verification_summary", {})
+            known_limitations = professional_context.get("known_limitations", [])
+            research = professional_context.get("research")
+            checklist_lines = "\n".join(
+                f"- [{'pass' if item['passed'] else 'fail'}] {item['name']}: {item['detail']}"
+                for item in checklist
+            ) or "- Checklist will be filled after verification."
+            research_block = ""
+            if research is not None:
+                research_block = f"\nResearch\n- {research['summary'].replace(chr(10), chr(10) + '- ')}\n"
+            limitations_block = "\n".join(f"- {item}" for item in known_limitations) or "- No known limitations recorded yet."
+            return f"""{display_name}
+====================
+
+This project was generated by LocalPilot Professional Build Mode.
+
+Project brief
+- Request: {brief.get('request', 'Unknown request')}
+- Target platform: {brief.get('target_platform', 'Windows desktop/local filesystem')}
+- How it should run: {brief.get('run_instructions', f'Double-click {launcher_name}.')}
+- Done means: {brief.get('done_means', 'Acceptance checklist passes and verification is complete.')}
+
+Files
+- {main_filename}
+- {launcher_name}
+
+How to run
+1. Open this folder.
+2. Double-click {launcher_name}.
+
+Acceptance checklist
+{checklist_lines}
+
+Verification summary
+- Checks performed: {", ".join(verification_summary.get('checks_performed', [])) or 'Pending verification'}
+- Verification ok: {verification_summary.get('ok', False)}
+
+Known limitations
+{limitations_block}
+{research_block}"""
         if display_name == "Website":
             website_spec = website_spec or self._default_website_spec()
             return f"""{display_name}

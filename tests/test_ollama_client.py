@@ -54,6 +54,14 @@ def test_lifecycle_config_loads_with_expected_heavy_roles():
     ]
 
 
+def test_professional_build_config_defaults_are_present():
+    settings = load_settings()
+
+    assert settings["professional_build"]["enabled"] is True
+    assert settings["professional_build"]["max_passes"] == 3
+    assert settings["professional_build"]["allow_web_research"] is True
+
+
 def test_coder_role_falls_back_when_primary_missing():
     profiles = load_model_profiles()
     client = OllamaClient(

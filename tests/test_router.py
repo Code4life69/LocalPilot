@@ -46,3 +46,4 @@ def test_keyword_routing():
     assert router.classify("page ocr") == "desktop"
     assert router.classify("gui settings are confusing") == "chat"
     assert router.classify("notepad is a useful app") != "memory"
+    assert router.classify("professional build make me a notepad app with a gui and double click starter") == "code"
