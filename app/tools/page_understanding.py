@@ -32,7 +32,8 @@ class PageUnderstandingEngine:
     def __init__(self, app) -> None:
         self.app = app
         self.threshold = float(app.settings.get("page_understanding", {}).get("confidence_threshold", 0.85))
-        self.debug_views_dir = Path(self.app.root_dir) / "workspace" / "debug_views"
+        root_dir = Path(getattr(self.app, "root_dir", "."))
+        self.debug_views_dir = root_dir / "workspace" / "debug_views"
 
     def snapshot(
         self,
