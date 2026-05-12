@@ -9,8 +9,7 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from app.tools.mouse_keyboard import hotkey, press_key, type_text
-from app.tools.screen import get_active_window_basic, take_screenshot
-from app.tools.windows_ui import get_active_window_title, get_focused_control, list_visible_controls
+from app.tools.page_understanding import PageUnderstandingEngine
 
 
 @dataclass
@@ -36,6 +35,7 @@ class DesktopExecutionFlow:
 
     def __init__(self, app) -> None:
         self.app = app
+        self.page_understanding = PageUnderstandingEngine(app)
 
     def can_handle(self, text: str) -> bool:
         lowered = text.lower()
@@ -67,6 +67,7 @@ class DesktopExecutionFlow:
             last_snapshot = snapshot or last_snapshot
             if not ok:
                 verification = self._result_verification(last_snapshot, default_verified=False, default_reason=detail)
+                self._record_failure_lesson(text, verification)
                 return {
                     "ok": False,
                     "content": self._format_summary(step_results, last_snapshot, success=False),
@@ -221,24 +222,15 @@ class DesktopExecutionFlow:
         )
 
     def inspect(self, include_vision: bool = False, vision_prompt: str | None = None) -> dict[str, Any]:
-        active_window = get_active_window_title()
-        if not active_window.get("ok") or not active_window.get("title"):
-            active_window = get_active_window_basic()
-        snapshot: dict[str, Any] = {
-            "active_window": active_window,
-            "focused_control": get_focused_control(),
-            "visible_controls": list_visible_controls(max_depth=1),
-        }
-
         if include_vision:
-            screenshot = take_screenshot(self.app.settings["screenshots_dir"])
-            snapshot["screenshot"] = screenshot
-            if screenshot.get("ok"):
-                self.app.logger.event("Vision", "UIA verification insufficient, using screenshot fallback")
-                snapshot["vision_analysis"] = self.app.ollama.analyze_screenshot(
-                    vision_prompt or "Describe this screenshot.",
-                    screenshot["path"],
-                )
+            self.app.logger.event("Vision", "UIA verification insufficient, using screenshot fallback")
+        snapshot = self.page_understanding.snapshot(
+            capture_screenshot=True,
+            include_vision=include_vision,
+            vision_prompt=vision_prompt,
+        )
+        if snapshot.get("vision_summary"):
+            snapshot["vision_analysis"] = snapshot["vision_summary"]
         return snapshot
 
     def _verify_active_window_title(
@@ -350,6 +342,19 @@ class DesktopExecutionFlow:
             "active_window_title": verification.get("active_window_title", snapshot.get("active_window", {}).get("title", "")),
             "vision_summary": verification.get("vision_summary", snapshot.get("vision_analysis", "")),
         }
+
+    def _record_failure_lesson(self, task: str, verification: dict[str, Any]) -> None:
+        lessons = getattr(self.app, "desktop_lessons", None)
+        if lessons is None:
+            return
+        lessons.record(
+            "verification_failure",
+            task,
+            verification.get("reason", "Desktop execution verification failed."),
+            verification_source=verification.get("verification_source", "unknown"),
+            active_window_title=verification.get("active_window_title", ""),
+            vision_summary=verification.get("vision_summary", ""),
+        )
 
     def _format_summary(
         self,

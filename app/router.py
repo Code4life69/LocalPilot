@@ -47,6 +47,10 @@ class KeywordRouter:
 
     DESKTOP_OBSERVATION_PHRASES = [
         "inspect desktop",
+        "page inspect",
+        "page confidence",
+        "show page understanding",
+        "show desktop lessons",
         "what window am i on",
         "what window am i in",
         "what is under my mouse",

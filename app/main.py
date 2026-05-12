@@ -25,6 +25,7 @@ from app.modes.research_mode import ResearchMode
 from app.router import KeywordRouter
 from app.safety import SafetyManager
 from app.system_doctor import build_system_doctor_report
+from app.tools.desktop_lessons import DesktopLessonStore
 
 
 class LocalPilotApp:
@@ -39,6 +40,7 @@ class LocalPilotApp:
             self.root_dir / self.settings["memory_dir"],
             self.root_dir / "config" / "capabilities.json",
         )
+        self.desktop_lessons = DesktopLessonStore(self.root_dir / self.settings["memory_dir"] / "desktop_lessons.jsonl")
         self.capabilities = self.memory.load_capabilities()
         self.system_prompt = build_system_prompt(self.capabilities)
         self.router = KeywordRouter()

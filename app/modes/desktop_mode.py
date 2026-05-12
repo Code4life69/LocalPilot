@@ -5,6 +5,7 @@ import re
 from app.tools.desktop_flow import DesktopExecutionFlow
 from app.tools.desktop_visualizer import visualize_desktop_understanding
 from app.tools.mouse_keyboard import click, hotkey, move_mouse, type_text
+from app.tools.page_understanding import PageUnderstandingEngine
 from app.tools.screen import get_active_window_basic, get_mouse_position, take_screenshot
 from app.tools.windows_ui import get_active_window_title, get_control_at_point, get_focused_control, list_visible_controls
 
@@ -13,6 +14,7 @@ class DesktopMode:
     def __init__(self, app) -> None:
         self.app = app
         self.execution_flow = DesktopExecutionFlow(app)
+        self.page_understanding = PageUnderstandingEngine(app)
 
     def handle(self, request: dict) -> dict:
         text = request["user_text"].strip()
@@ -25,6 +27,18 @@ class DesktopMode:
         if lowered in {"visualize desktop", "visualize desktop understanding", "show me what you see"}:
             debug_dir = str(self.app.root_dir / "workspace" / "debug_views")
             return visualize_desktop_understanding(self.app.settings["screenshots_dir"], debug_dir)
+
+        if lowered == "page inspect":
+            return self._page_inspect(include_vision=False)
+
+        if lowered == "page confidence":
+            return self._page_inspect(include_vision=True, assess=True)
+
+        if lowered == "show page understanding":
+            return self._page_inspect(include_vision=True, assess=True, heading="Page understanding")
+
+        if lowered == "show desktop lessons":
+            return {"ok": True, "content": self.app.desktop_lessons.render_recent()}
 
         if lowered == "inspect desktop":
             return self._inspect_desktop()
@@ -69,34 +83,60 @@ class DesktopMode:
 
         if lowered.startswith("click"):
             coords = self._extract_coords(text)
+            blocked_result, gate_snapshot = self._guard_action(
+                action_kind="click",
+                action_name=f"click at {coords[0]}, {coords[1]}" if coords else "click current cursor position",
+                request_text=text,
+                target_point=coords,
+            )
+            if blocked_result is not None:
+                return blocked_result
             if not self.app.ask_approval(f"Approve click action? {coords if coords else 'current cursor position'}"):
                 return {"ok": False, "error": "Click cancelled by user."}
             if coords:
-                return self.app.run_guarded_desktop_action(
+                result = self.app.run_guarded_desktop_action(
                     f"click at {coords[0]}, {coords[1]}",
                     lambda: click(*coords),
                 )
-            return self.app.run_guarded_desktop_action("click current cursor position", click)
+                return self._finalize_guarded_action(result, gate_snapshot, "click", text, coords)
+            result = self.app.run_guarded_desktop_action("click current cursor position", click)
+            return self._finalize_guarded_action(result, gate_snapshot, "click", text, coords)
 
         if lowered.startswith("type "):
             payload = text[5:]
+            blocked_result, gate_snapshot = self._guard_action(
+                action_kind="type_text",
+                action_name="type text",
+                request_text=text,
+            )
+            if blocked_result is not None:
+                return blocked_result
             if not self.app.ask_approval(f"Approve typing this text?\n{payload}"):
                 return {"ok": False, "error": "Typing cancelled by user."}
-            return self.app.run_guarded_desktop_action(
+            result = self.app.run_guarded_desktop_action(
                 "type text",
                 lambda: type_text(payload),
             )
+            return self._finalize_guarded_action(result, gate_snapshot, "type_text", text)
 
         if lowered.startswith("hotkey"):
             keys = [part.strip() for part in re.split(r"[+, ]+", text[6:].strip()) if part.strip()]
             if not keys:
                 return {"ok": False, "error": "No hotkey keys provided."}
+            blocked_result, gate_snapshot = self._guard_action(
+                action_kind="hotkey",
+                action_name=f"hotkey {' + '.join(keys)}",
+                request_text=text,
+            )
+            if blocked_result is not None:
+                return blocked_result
             if not self.app.ask_approval(f"Approve hotkey: {' + '.join(keys)}?"):
                 return {"ok": False, "error": "Hotkey cancelled by user."}
-            return self.app.run_guarded_desktop_action(
+            result = self.app.run_guarded_desktop_action(
                 f"hotkey {' + '.join(keys)}",
                 lambda: hotkey(*keys),
             )
+            return self._finalize_guarded_action(result, gate_snapshot, "hotkey", text)
 
         if "analyze screenshot" in lowered:
             screenshot = take_screenshot(self.app.settings["screenshots_dir"])
@@ -213,6 +253,113 @@ class DesktopMode:
             "ok": True,
             "content": "\n".join(lines),
             "visible_controls": visible_controls,
+        }
+
+    def _page_inspect(
+        self,
+        *,
+        include_vision: bool,
+        assess: bool = False,
+        heading: str = "Page inspect",
+    ) -> dict:
+        if assess:
+            snapshot = self.page_understanding.assess(
+                action_kind="inspect",
+                action_text=heading,
+                include_vision=include_vision,
+                vision_prompt="Describe this page and whether the main visible target is clearly identifiable.",
+            )
+        else:
+            snapshot = self.page_understanding.snapshot(
+                capture_screenshot=True,
+                include_vision=include_vision,
+                vision_prompt="Describe this page in one short paragraph.",
+            )
+            snapshot["confidence_score"] = 0.0
+            snapshot["confidence_threshold"] = self.page_understanding.threshold
+            snapshot["confidence_allowed"] = True
+            snapshot["confidence_reason"] = "Inspection only."
+            snapshot["candidate_targets_count"] = len(snapshot.get("candidate_targets", []))
+        return {
+            "ok": True,
+            "content": self.page_understanding.render(snapshot, heading=heading),
+            **snapshot,
+        }
+
+    def _guard_action(
+        self,
+        *,
+        action_kind: str,
+        action_name: str,
+        request_text: str,
+        target_point: tuple[int, int] | None = None,
+    ) -> tuple[dict | None, dict]:
+        snapshot = self.page_understanding.assess(
+            action_kind=action_kind,
+            action_text=request_text,
+            target_point=target_point,
+            include_vision=True,
+            vision_prompt="Describe whether the intended target or page is clearly present for this action.",
+        )
+        if snapshot.get("confidence_allowed"):
+            return None, snapshot
+        self.app.desktop_lessons.record(
+            "confidence_gate_refusal",
+            action_name,
+            snapshot.get("confidence_reason", "Desktop action blocked by confidence gate."),
+            confidence_score=snapshot.get("confidence_score", 0.0),
+            confidence_threshold=snapshot.get("confidence_threshold", self.page_understanding.threshold),
+            active_window_title=snapshot.get("active_window", {}).get("title", ""),
+            vision_summary=snapshot.get("vision_summary", ""),
+        )
+        return self.page_understanding.build_refusal_payload(snapshot, action_name=action_name), snapshot
+
+    def _finalize_guarded_action(
+        self,
+        action_result: dict,
+        gate_snapshot: dict,
+        action_kind: str,
+        request_text: str,
+        target_point: tuple[int, int] | None = None,
+    ) -> dict:
+        if not action_result.get("ok"):
+            self.app.desktop_lessons.record(
+                "action_failure",
+                request_text,
+                action_result.get("error", "Desktop action failed."),
+            )
+            return action_result
+
+        post_snapshot = self.page_understanding.post_action_verification(
+            gate_snapshot,
+            action_kind=action_kind,
+            action_text=request_text,
+            target_point=target_point,
+        )
+        verification = post_snapshot.get("verification", {})
+        if not verification.get("verified", False):
+            self.app.desktop_lessons.record(
+                "post_action_verification_failure",
+                request_text,
+                verification.get("reason", "Post-action verification failed."),
+                active_window_title=verification.get("active_window_title", ""),
+                vision_summary=verification.get("vision_summary", ""),
+            )
+
+        content = self.page_understanding.render(gate_snapshot, heading="Pre-action page understanding")
+        content += "\n\n"
+        content += self.page_understanding.render(post_snapshot, heading="Post-action verification")
+
+        return {
+            **action_result,
+            "content": content,
+            "verified": verification.get("verified", False),
+            "verification_source": verification.get("verification_source", "page_snapshot"),
+            "reason": verification.get("reason", ""),
+            "active_window_title": verification.get("active_window_title", ""),
+            "vision_summary": verification.get("vision_summary", ""),
+            "pre_action": gate_snapshot,
+            "post_action": post_snapshot,
         }
 
     def _best_active_window(self) -> dict:

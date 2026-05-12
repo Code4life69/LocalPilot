@@ -4,10 +4,23 @@ from app.tools.desktop_flow import DesktopExecutionFlow, PlannedStep
 
 
 class DummyApp:
-    settings = {"screenshots_dir": "workspace/screenshots"}
+    settings = {
+        "screenshots_dir": "workspace/screenshots",
+        "page_understanding": {"confidence_threshold": 0.85},
+    }
 
     def __init__(self):
         self.logger = type("Logger", (), {"event": staticmethod(lambda *args, **kwargs: None)})()
+        self.desktop_lessons = type(
+            "Lessons",
+            (),
+            {
+                "__init__": lambda self: setattr(self, "entries", []),
+                "record": lambda self, lesson_type, task, reason, **extra: self.entries.append(
+                    {"type": lesson_type, "task": task, "reason": reason, "extra": extra}
+                ),
+            },
+        )()
 
     def ask_approval(self, _prompt):
         return True
@@ -165,3 +178,4 @@ def test_failed_verification_returns_ok_false():
     assert result["active_window_title"] == "Chatting - Discord"
     assert result["vision_summary"] == "No, this is not a Google results page for Code4life69 LocalPilot issue 4."
     assert result["content"].startswith("Desktop execution stopped.")
+    assert flow.app.desktop_lessons.entries[0]["type"] == "verification_failure"
