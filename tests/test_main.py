@@ -231,6 +231,174 @@ def test_refresh_status_bar_preserves_waiting_approval_state():
     assert gui.safety_var.get() == "Waiting for approval"
 
 
+def test_build_approval_window_keeps_buttons_visible_and_binds_shortcuts(monkeypatch):
+    labels = []
+    frames = []
+    text_areas = []
+    buttons = []
+
+    class FakeVar:
+        def __init__(self, value=""):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class FakeRoot:
+        def winfo_rootx(self):
+            return 100
+
+        def winfo_rooty(self):
+            return 120
+
+        def winfo_width(self):
+            return 900
+
+        def winfo_height(self):
+            return 700
+
+        def after(self, _delay, callback):
+            callback()
+
+    class FakeDialog:
+        def __init__(self):
+            self.bindings = {}
+            self.protocols = {}
+            self.geometry_value = None
+            self.exists = True
+
+        def title(self, _value):
+            return None
+
+        def configure(self, **_kwargs):
+            return None
+
+        def resizable(self, *_args):
+            return None
+
+        def attributes(self, *_args):
+            return None
+
+        def transient(self, _root):
+            return None
+
+        def protocol(self, name, callback):
+            self.protocols[name] = callback
+
+        def grid_columnconfigure(self, *_args, **_kwargs):
+            return None
+
+        def geometry(self, value):
+            self.geometry_value = value
+
+        def winfo_exists(self):
+            return self.exists
+
+        def grab_set(self):
+            return None
+
+        def grab_release(self):
+            return None
+
+        def deiconify(self):
+            return None
+
+        def lift(self):
+            return None
+
+        def focus_force(self):
+            return None
+
+        def bind(self, name, callback):
+            self.bindings[name] = callback
+
+        def destroy(self):
+            self.exists = False
+
+    class FakeWidget:
+        def __init__(self, _parent=None, **kwargs):
+            self.kwargs = kwargs
+            self.grid_calls = []
+            self.pack_calls = []
+            self.inserted = None
+            self.focused = False
+
+        def grid(self, **kwargs):
+            self.grid_calls.append(kwargs)
+
+        def pack(self, **kwargs):
+            self.pack_calls.append(kwargs)
+
+        def insert(self, *args):
+            self.inserted = args
+
+        def configure(self, **kwargs):
+            self.kwargs.update(kwargs)
+
+        def focus_set(self):
+            self.focused = True
+
+    class FakeLabel(FakeWidget):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            labels.append(self)
+
+    class FakeFrame(FakeWidget):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            frames.append(self)
+
+    class FakeText(FakeWidget):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            text_areas.append(self)
+
+    class FakeButton(FakeWidget):
+        def __init__(self, *args, **kwargs):
+            self.command = kwargs.get("command")
+            super().__init__(*args, **kwargs)
+            buttons.append(self)
+
+    dialog = FakeDialog()
+    monkeypatch.setattr(main_module.tk, "Toplevel", lambda _root: dialog)
+    monkeypatch.setattr(main_module.tk, "Label", FakeLabel)
+    monkeypatch.setattr(main_module.tk, "Frame", FakeFrame)
+    monkeypatch.setattr(main_module.scrolledtext, "ScrolledText", FakeText)
+    monkeypatch.setattr(main_module.ttk, "Button", FakeButton)
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.root = FakeRoot()
+    gui.colors = {"panel": "#111111", "text": "#ffffff", "muted": "#bbbbbb", "surface": "#222222"}
+    gui.safety_var = FakeVar("Waiting for approval")
+    gui.approval_window = None
+
+    approved = {"value": False}
+    done = threading.Event()
+    window = gui._build_approval_window("Approve desktop execution?", approved, done)
+
+    assert window is dialog
+    assert "x380" in dialog.geometry_value
+    assert any(widget.kwargs.get("text") == "Choose Allow to continue or Deny to cancel." for widget in labels)
+    assert text_areas[0].kwargs["height"] == 8
+    assert text_areas[0].grid_calls
+    assert not text_areas[0].pack_calls
+    assert frames[0].grid_calls
+    assert "<Return>" in dialog.bindings
+    assert "<Escape>" in dialog.bindings
+
+    dialog.bindings["<Return>"](None)
+
+    assert approved["value"] is True
+    assert done.is_set() is True
+    assert gui.safety_var.get() == "Guarded"
+    assert dialog.exists is False
+    assert any(button.kwargs.get("text") == "Allow" for button in buttons)
+    assert any(button.kwargs.get("text") == "Deny" for button in buttons)
+
+
 def test_show_desktop_busy_overlay_waits_for_background_thread_build(monkeypatch):
     gui = LocalPilotGUI.__new__(LocalPilotGUI)
     gui.app = SimpleNamespace(settings={"desktop_guard": {"show_overlay": True}})

@@ -660,9 +660,10 @@ class LocalPilotGUI:
         dialog.attributes("-topmost", True)
         dialog.transient(self.root)
         dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+        dialog.grid_columnconfigure(0, weight=1)
 
         width = 640
-        height = 300
+        height = 380
         try:
             root_x = self.root.winfo_rootx()
             root_y = self.root.winfo_rooty()
@@ -681,12 +682,21 @@ class LocalPilotGUI:
             fg=self.colors["text"],
             bg=self.colors["panel"],
         )
-        header.pack(anchor="w", padx=20, pady=(18, 10))
+        header.grid(row=0, column=0, sticky="w", padx=20, pady=(18, 10))
+
+        instruction = tk.Label(
+            dialog,
+            text="Choose Allow to continue or Deny to cancel.",
+            font=("Segoe UI", 10),
+            fg=self.colors["muted"],
+            bg=self.colors["panel"],
+        )
+        instruction.grid(row=1, column=0, sticky="w", padx=20, pady=(0, 10))
 
         body = scrolledtext.ScrolledText(
             dialog,
             wrap=tk.WORD,
-            height=9,
+            height=8,
             font=("Segoe UI", 11),
             bg=self.colors["surface"],
             fg=self.colors["text"],
@@ -696,12 +706,12 @@ class LocalPilotGUI:
             padx=12,
             pady=12,
         )
-        body.pack(fill="both", expand=True, padx=20)
+        body.grid(row=2, column=0, sticky="ew", padx=20)
         body.insert("1.0", prompt)
         body.configure(state="disabled")
 
         button_row = tk.Frame(dialog, bg=self.colors["panel"])
-        button_row.pack(fill="x", padx=20, pady=18)
+        button_row.grid(row=3, column=0, sticky="ew", padx=20, pady=(16, 18))
 
         def finish(value: bool) -> None:
             approved["value"] = value
@@ -719,6 +729,8 @@ class LocalPilotGUI:
         deny.pack(side="right")
         allow = ttk.Button(button_row, text="Allow", command=lambda: finish(True), style="Action.TButton")
         allow.pack(side="right", padx=(0, 10))
+        dialog.bind("<Return>", lambda _event: finish(True))
+        dialog.bind("<Escape>", lambda _event: finish(False))
 
         try:
             dialog.grab_set()
