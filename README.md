@@ -69,6 +69,12 @@ System doctor:
 python localpilot.py --system-doctor
 ```
 
+Doctor alias:
+
+```powershell
+python localpilot.py --doctor
+```
+
 Benchmark:
 
 ```powershell
@@ -159,6 +165,43 @@ If desktop observation shows `dependency_missing` for UI Automation:
 
 `Run LocalPilot.bat` is already configured to use `.venv\Scripts\python.exe`, so dependency fixes should be installed into that same environment.
 
+## OCR Support
+
+LocalPilot uses OCR only as a support layer for page understanding and confidence scoring. It does not replace UI Automation safety checks, and OCR text alone is never enough to authorize clicking or typing.
+
+OCR is used to help answer:
+
+- what text is visible on screen
+- what buttons, labels, and fields can be read
+- whether OCR agrees with UI Automation and screenshot vision
+- whether OCR should slightly raise or lower confidence
+
+Install OCR dependencies:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install pytesseract
+```
+
+Then install Tesseract OCR for Windows and make sure `tesseract.exe` is on `PATH`, or install it in:
+
+```text
+C:\Program Files\Tesseract-OCR\tesseract.exe
+```
+
+Test OCR with:
+
+```powershell
+python localpilot.py --doctor
+```
+
+and inside LocalPilot:
+
+```text
+ocr screenshot
+```
+
+Generated OCR-preprocessed images are written under `workspace/debug_views` and stay local because `workspace/*` is ignored by Git.
+
 ## How To Run
 
 ```powershell
@@ -184,6 +227,7 @@ For double-click launch on Windows, use [Run LocalPilot.bat](</C:/LocalPilot/Run
 - Desktop click, type, and hotkey actions require approval.
 - Windows UI Automation is preferred over screenshots.
 - Vision is only used when desktop inspection needs it.
+- OCR is only used as a support signal for page understanding and confidence scoring.
 - The assistant should not rewrite its own core logic without user approval.
 
 ## Project Structure
@@ -217,6 +261,7 @@ C:\LocalPilot
     screen.py
     mouse_keyboard.py
     windows_ui.py
+    ocr.py
   app\modes\
     __init__.py
     chat_mode.py
@@ -257,7 +302,7 @@ C:\LocalPilot
 - Stronger Windows UI Automation control actions
 - Better structured learned facts updates
 - Full multimodal Ollama verification for `qwen2.5vl:7b`
-- Add PaddleOCR later for screen text extraction
+- Add stronger OCR backends later if Tesseract is not enough
 - Add Whisper.cpp later for voice input
 
 ## First Roadmap

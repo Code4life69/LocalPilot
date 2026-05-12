@@ -7,5 +7,5 @@ pynput
 uiautomation
 beautifulsoup4
 duckduckgo-search
+pytesseract
 pytest
-

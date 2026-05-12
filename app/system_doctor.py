@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import importlib
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
+
+from app.tools.ocr import get_ocr_backend_status
 
 
 DEPENDENCIES = [
@@ -43,6 +46,12 @@ DEPENDENCIES = [
         "module": "duckduckgo_search",
         "fix": r".\.venv\Scripts\python.exe -m pip install duckduckgo-search",
     },
+    {
+        "label": "pytesseract",
+        "package": "pytesseract",
+        "module": "pytesseract",
+        "fix": r".\.venv\Scripts\python.exe -m pip install pytesseract",
+    },
 ]
 
 
@@ -52,6 +61,7 @@ def build_system_doctor_report(root_dir: str | Path, ollama_reachable: bool) -> 
     current_python = Path(sys.executable)
     launcher_uses_venv = _launcher_uses_venv_python(root)
     dependencies = diagnose_dependencies()
+    ocr_status = diagnose_ocr_backend()
 
     lines = [
         "System doctor",
@@ -69,6 +79,16 @@ def build_system_doctor_report(root_dir: str | Path, ollama_reachable: bool) -> 
             lines.append(f"    detail: {item['detail']}")
         if item.get("fix"):
             lines.append(f"    fix: {item['fix']}")
+
+    lines.append("- OCR backend:")
+    lines.append(f"  - backend: {ocr_status['backend']}")
+    lines.append(f"  - available: {'yes' if ocr_status['available'] else 'no'}")
+    if ocr_status.get("tesseract_path"):
+        lines.append(f"  - tesseract_path: {ocr_status['tesseract_path']}")
+    if ocr_status.get("error"):
+        lines.append(f"  - detail: {ocr_status['error']}")
+    if ocr_status.get("install_hint"):
+        lines.append(f"  - fix: {ocr_status['install_hint']}")
 
     if any(item["status"] == "dependency_missing" for item in dependencies):
         lines.extend(
@@ -117,6 +137,15 @@ def dependency_missing_payload(module_name: str, package_name: str | None = None
         "error": f"{module_name} is not installed in the active Python environment.",
         "fix": fix,
     }
+
+
+def diagnose_ocr_backend() -> dict[str, Any]:
+    result = dict(get_ocr_backend_status())
+    if not result.get("tesseract_path"):
+        discovered = shutil.which("tesseract")
+        if discovered:
+            result["tesseract_path"] = discovered
+    return result
 
 
 def _launcher_uses_venv_python(root_dir: Path) -> bool:

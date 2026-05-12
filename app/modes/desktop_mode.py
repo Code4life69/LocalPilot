@@ -5,6 +5,7 @@ import re
 from app.tools.desktop_flow import DesktopExecutionFlow
 from app.tools.desktop_visualizer import visualize_desktop_understanding
 from app.tools.mouse_keyboard import click, hotkey, move_mouse, type_text
+from app.tools.ocr import read_screenshot
 from app.tools.page_understanding import PageUnderstandingEngine
 from app.tools.screen import get_active_window_basic, get_mouse_position, take_screenshot
 from app.tools.windows_ui import get_active_window_title, get_control_at_point, get_focused_control, list_visible_controls
@@ -39,6 +40,9 @@ class DesktopMode:
 
         if lowered == "show desktop lessons":
             return {"ok": True, "content": self.app.desktop_lessons.render_recent()}
+
+        if lowered in {"ocr screenshot", "read screen text", "page ocr"}:
+            return self._ocr_screenshot()
 
         if lowered == "inspect desktop":
             return self._inspect_desktop()
@@ -284,6 +288,32 @@ class DesktopMode:
             "ok": True,
             "content": self.page_understanding.render(snapshot, heading=heading),
             **snapshot,
+        }
+
+    def _ocr_screenshot(self) -> dict:
+        result = read_screenshot(
+            self.app.settings["screenshots_dir"],
+            self.app.root_dir / "workspace" / "debug_views",
+        )
+        if not result.get("ok"):
+            return {
+                **result,
+                "content": (
+                    f"OCR unavailable: {result.get('error', 'OCR backend unavailable.')}\n"
+                    f"Fix: {result.get('install_hint', 'Install pytesseract and Tesseract OCR.')}"
+                ),
+            }
+
+        lines = [
+            f"OCR backend: {result.get('backend', 'unknown')}",
+            f"Source image: {result.get('source_image', '')}",
+            f"Confidence: {result.get('confidence', 0.0)}",
+            "Visible text:",
+            result.get("text", "(no text detected)") or "(no text detected)",
+        ]
+        return {
+            **result,
+            "content": "\n".join(lines),
         }
 
     def _guard_action(

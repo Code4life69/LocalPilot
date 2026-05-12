@@ -51,6 +51,9 @@ class KeywordRouter:
         "page confidence",
         "show page understanding",
         "show desktop lessons",
+        "ocr screenshot",
+        "read screen text",
+        "page ocr",
         "what window am i on",
         "what window am i in",
         "what is under my mouse",
@@ -75,6 +78,8 @@ class KeywordRouter:
 
     def classify(self, text: str) -> str:
         lowered = text.lower().strip()
+        if self._looks_like_desktop_task_request(lowered):
+            return "desktop"
         if self._looks_like_code_verification_request(lowered):
             return "code"
         if self._looks_like_website_project_request(lowered):
@@ -87,8 +92,6 @@ class KeywordRouter:
             return "code"
         if self._looks_like_memory_request(lowered):
             return "memory"
-        if self._looks_like_desktop_task_request(lowered):
-            return "desktop"
         if self._looks_like_current_fact_request(lowered):
             return "research"
         for mode, keywords in self.ROUTE_KEYWORDS.items():

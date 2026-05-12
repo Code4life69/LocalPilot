@@ -182,6 +182,29 @@ def test_main_system_doctor_flag_prints_without_gui(monkeypatch):
     assert calls["output"] == ["System doctor\n- UI Automation: dependency_missing"]
 
 
+def test_main_doctor_alias_prints_without_gui(monkeypatch):
+    calls = {"shutdown": False, "output": []}
+
+    class FakeApp:
+        def __init__(self, root_dir):
+            self.root_dir = root_dir
+
+        def describe_system_doctor(self):
+            return "System doctor\n- OCR backend: unavailable"
+
+        def shutdown(self):
+            calls["shutdown"] = True
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", FakeApp)
+    monkeypatch.setattr(main_module, "safe_console_print", lambda text="": calls["output"].append(text))
+
+    exit_code = main_module.main(["--doctor"])
+
+    assert exit_code == 0
+    assert calls["shutdown"] is True
+    assert calls["output"] == ["System doctor\n- OCR backend: unavailable"]
+
+
 def test_approval_callback_logs_pending_and_acceptance():
     events = []
     app = LocalPilotApp.__new__(LocalPilotApp)

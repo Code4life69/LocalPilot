@@ -15,18 +15,31 @@ def test_system_doctor_reports_missing_uiautomation(monkeypatch, tmp_path):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
+    monkeypatch.setattr(
+        "app.system_doctor.diagnose_ocr_backend",
+        lambda: {
+            "available": False,
+            "backend": "pytesseract",
+            "error": "OCR backend unavailable: pytesseract is not installed.",
+            "install_hint": r".\.venv\Scripts\python.exe -m pip install pytesseract",
+            "tesseract_path": "",
+        },
+    )
+
     report = build_system_doctor_report(tmp_path, ollama_reachable=False)
 
     assert "System doctor" in report
     assert "uiautomation: dependency_missing" in report
     assert r".\.venv\Scripts\python.exe -m pip install uiautomation" in report
+    assert "OCR backend:" in report
+    assert "backend: pytesseract" in report
 
 
 def test_diagnose_dependencies_returns_missing_status(monkeypatch):
     import importlib
 
     def fake_import_module(name):
-        if name == "uiautomation":
+        if name in {"uiautomation", "pytesseract"}:
             raise ModuleNotFoundError("No module named 'uiautomation'")
         return object()
 
@@ -34,9 +47,11 @@ def test_diagnose_dependencies_returns_missing_status(monkeypatch):
 
     results = diagnose_dependencies()
     uia = next(item for item in results if item["module"] == "uiautomation")
+    ocr = next(item for item in results if item["module"] == "pytesseract")
 
     assert uia["status"] == "dependency_missing"
     assert "fix" in uia
+    assert ocr["status"] == "dependency_missing"
 
 
 def test_windows_ui_dependency_missing_payload(monkeypatch):

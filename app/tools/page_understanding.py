@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from typing import Any
+from pathlib import Path
 
+from app.tools.ocr import read_image
 from app.tools.screen import get_active_window_basic, get_mouse_position, take_screenshot
 from app.tools.windows_ui import (
     get_active_window_title,
@@ -30,6 +32,7 @@ class PageUnderstandingEngine:
     def __init__(self, app) -> None:
         self.app = app
         self.threshold = float(app.settings.get("page_understanding", {}).get("confidence_threshold", 0.85))
+        self.debug_views_dir = Path(self.app.root_dir) / "workspace" / "debug_views"
 
     def snapshot(
         self,
@@ -58,7 +61,23 @@ class PageUnderstandingEngine:
             "screenshot": screenshot,
             "screenshot_path": screenshot.get("path", ""),
             "candidate_targets": self._candidate_targets(focused_control, target_control, visible_controls),
+            "ocr_available": False,
+            "ocr_text": "",
+            "ocr_blocks": [],
+            "ocr_backend": "",
+            "ocr_confidence": 0.0,
         }
+
+        if screenshot.get("ok"):
+            ocr_result = read_image(screenshot["path"], output_dir=self.debug_views_dir)
+            snapshot["ocr_available"] = bool(ocr_result.get("ok"))
+            snapshot["ocr_text"] = ocr_result.get("text", "")
+            snapshot["ocr_blocks"] = ocr_result.get("blocks", [])
+            snapshot["ocr_backend"] = ocr_result.get("backend", "")
+            snapshot["ocr_confidence"] = float(ocr_result.get("confidence", 0.0) or 0.0)
+            snapshot["ocr_error"] = ocr_result.get("error", "")
+            snapshot["ocr_install_hint"] = ocr_result.get("install_hint", "")
+            snapshot["ocr_processed_image"] = ocr_result.get("processed_image", "")
 
         if include_vision and screenshot.get("ok"):
             prompt = vision_prompt or "Describe this page in one short paragraph."
@@ -131,6 +150,17 @@ class PageUnderstandingEngine:
                 reasons.append("vision did not report a mismatch")
 
         target_control = snapshot.get("target_control", {})
+        ocr_text = snapshot.get("ocr_text", "").lower()
+        expected_terms = self._expected_terms(action_text)
+        if snapshot.get("ocr_available") and ocr_text:
+            matched_terms = [term for term in expected_terms if term in ocr_text]
+            if matched_terms:
+                score += 0.10 if browser_like else 0.05
+                reasons.append(f"OCR matched expected text: {', '.join(matched_terms[:3])}")
+            elif browser_like and expected_terms:
+                score = max(0.0, score - 0.05)
+                reasons.append("OCR did not confirm the expected browser text")
+
         if action_kind == "click":
             if target_control.get("ok") and target_control.get("bounds"):
                 score += 0.20
@@ -149,11 +179,14 @@ class PageUnderstandingEngine:
 
         score = min(round(score, 2), 0.99)
         allowed = score >= self.threshold and not blocking_reasons
-        primary_reason = (
-            "Confidence threshold met."
-            if allowed
-            else (blocking_reasons[0] if blocking_reasons else f"confidence {score:.2f} is below threshold {self.threshold:.2f}")
-        )
+        if allowed:
+            primary_reason = "Confidence threshold met."
+        elif action_kind == "click" and "no target bounds exist for the requested click" in blocking_reasons:
+            primary_reason = "no target bounds exist for the requested click"
+        elif action_kind in {"type_text", "hotkey"} and "no focused control bounds for typing/hotkey action" in blocking_reasons:
+            primary_reason = "no focused control bounds for typing/hotkey action"
+        else:
+            primary_reason = blocking_reasons[0] if blocking_reasons else f"confidence {score:.2f} is below threshold {self.threshold:.2f}"
 
         snapshot.update(
             {
@@ -226,11 +259,17 @@ class PageUnderstandingEngine:
             f"- Target under mouse: {target_summary}",
             f"- Visible controls: {visible_count}",
             f"- Screenshot: {snapshot.get('screenshot_path') or 'not captured'}",
+            f"- OCR backend: {snapshot.get('ocr_backend') or 'unavailable'}",
+            f"- OCR available: {'yes' if snapshot.get('ocr_available') else 'no'}",
             f"- Candidate targets: {snapshot.get('candidate_targets_count', len(snapshot.get('candidate_targets', [])))}",
             f"- Confidence: {snapshot.get('confidence_score', 0.0):.2f} / {snapshot.get('confidence_threshold', self.threshold):.2f}",
             f"- Confidence result: {'allowed' if snapshot.get('confidence_allowed') else 'refused'}",
             f"- Reason: {snapshot.get('confidence_reason', 'n/a')}",
         ]
+        if snapshot.get("ocr_text"):
+            lines.append(f"- OCR text: {snapshot['ocr_text'][:240]}")
+        elif snapshot.get("ocr_error"):
+            lines.append(f"- OCR status: {snapshot['ocr_error']}")
         if snapshot.get("vision_summary"):
             lines.append(f"- Vision summary: {snapshot['vision_summary']}")
         candidates = snapshot.get("candidate_targets", [])
@@ -257,6 +296,9 @@ class PageUnderstandingEngine:
             "confidence_threshold": snapshot.get("confidence_threshold", self.threshold),
             "candidate_targets": snapshot.get("candidate_targets", []),
             "screenshot_path": snapshot.get("screenshot_path", ""),
+            "ocr_available": snapshot.get("ocr_available", False),
+            "ocr_text": snapshot.get("ocr_text", ""),
+            "ocr_backend": snapshot.get("ocr_backend", ""),
         }
 
     def _target_control(self, target_point: tuple[int, int] | None, mouse_position: dict[str, Any]) -> dict[str, Any]:
@@ -308,6 +350,44 @@ class PageUnderstandingEngine:
     def _vision_negative(self, text: str) -> bool:
         lowered = text.lower()
         return any(marker in lowered for marker in NEGATIVE_VISION_MARKERS)
+
+    def _expected_terms(self, text: str) -> list[str]:
+        stopwords = {
+            "click",
+            "type",
+            "text",
+            "browser",
+            "window",
+            "page",
+            "screen",
+            "google",
+            "desktop",
+            "mouse",
+            "cursor",
+            "hotkey",
+            "current",
+            "position",
+            "press",
+            "button",
+            "field",
+            "control",
+            "search",
+            "open",
+            "the",
+            "for",
+            "and",
+            "with",
+            "this",
+            "that",
+        }
+        terms: list[str] = []
+        for part in text.lower().replace('"', " ").replace("'", " ").split():
+            cleaned = "".join(ch for ch in part if ch.isalnum())
+            if len(cleaned) <= 2 or cleaned in stopwords:
+                continue
+            if cleaned not in terms:
+                terms.append(cleaned)
+        return terms[:6]
 
     def _control_summary(self, payload: dict[str, Any]) -> str:
         if not payload.get("ok"):

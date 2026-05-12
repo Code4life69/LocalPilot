@@ -1006,6 +1006,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print dependency and runtime diagnostics and exit without starting the GUI.",
     )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Alias for --system-doctor.",
+    )
     return parser
 
 
@@ -1030,7 +1035,7 @@ def main(argv: list[str] | None = None) -> int:
         app.shutdown()
         return 0
 
-    if args.system_doctor:
+    if args.system_doctor or args.doctor:
         safe_console_print(app.describe_system_doctor())
         app.shutdown()
         return 0
