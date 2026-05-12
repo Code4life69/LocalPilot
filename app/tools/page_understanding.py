@@ -14,16 +14,20 @@ from app.tools.windows_ui import (
 
 
 BROWSER_MARKERS = ("chrome", "google", "edge", "firefox", "brave", "browser")
+GOOGLE_RESULT_MARKERS = ("google search", "search results", "google images", "images")
 NEGATIVE_VISION_MARKERS = (
     "not present",
     "not visible",
     "not shown",
     "not on the page",
+    "not the expected",
     "not a",
     "does not show",
     "doesn't show",
     "cannot see",
     "can't see",
+    "is not",
+    "rather than",
     "mismatch",
 )
 
@@ -104,10 +108,14 @@ class PageUnderstandingEngine:
             target_point=target_point,
         )
         title = snapshot.get("active_window", {}).get("title", "")
+        title_lower = title.lower()
         browser_like = any(marker in title.lower() for marker in BROWSER_MARKERS)
         score = 0.0
         reasons: list[str] = []
         blocking_reasons: list[str] = []
+        expected_terms = self._expected_terms(action_text)
+        title_terms = self._title_terms(title)
+        title_matches = [term for term in expected_terms if term in title_lower]
 
         if title:
             score += 0.25
@@ -118,14 +126,30 @@ class PageUnderstandingEngine:
         if browser_like:
             score += 0.10
             reasons.append("active window looks browser-related")
+            if any(marker in title_lower for marker in GOOGLE_RESULT_MARKERS):
+                score += 0.10
+                reasons.append("active window title indicates a Google results page")
+            if title_matches:
+                score += 0.10
+                reasons.append(f"active window title matched expected terms: {', '.join(title_matches[:3])}")
 
         focused = snapshot.get("focused_control", {})
+        focused_name = str(focused.get("name", ""))
+        focused_name_lower = focused_name.lower()
+        focused_matches = [term for term in expected_terms if term in focused_name_lower]
         if focused.get("ok"):
             score += 0.20
             reasons.append("focused control available")
             if focused.get("bounds"):
                 score += 0.10
                 reasons.append("focused control has bounds")
+            if focused.get("control_type") == "DocumentControl":
+                if focused_matches:
+                    score += 0.10
+                    reasons.append(f"focused document matched expected terms: {', '.join(focused_matches[:3])}")
+                elif browser_like and self._term_overlap(focused_name_lower, title_terms):
+                    score += 0.10
+                    reasons.append("focused document agrees with the browser page title")
         elif focused.get("reason") == "dependency_missing":
             blocking_reasons.append("UI Automation dependency missing for focused control")
         else:
@@ -150,18 +174,32 @@ class PageUnderstandingEngine:
             else:
                 reasons.append("vision did not report a mismatch")
 
-        target_control = snapshot.get("target_control", {})
         ocr_text = snapshot.get("ocr_text", "").lower()
-        expected_terms = self._expected_terms(action_text)
+        ocr_matches = [term for term in expected_terms if term in ocr_text]
         if snapshot.get("ocr_available") and ocr_text:
-            matched_terms = [term for term in expected_terms if term in ocr_text]
-            if matched_terms:
+            if ocr_matches:
                 score += 0.10 if browser_like else 0.05
-                reasons.append(f"OCR matched expected text: {', '.join(matched_terms[:3])}")
+                reasons.append(f"OCR matched expected text: {', '.join(ocr_matches[:3])}")
+            elif browser_like and any(marker in ocr_text for marker in ("google", "search", "images", "google.com/search")):
+                score += 0.05
+                reasons.append("OCR indicates a browser search/results page")
+            elif browser_like and self._term_overlap(ocr_text, title_terms):
+                score += 0.05
+                reasons.append("OCR agrees with the browser page title")
             elif browser_like and expected_terms:
                 score = max(0.0, score - 0.05)
                 reasons.append("OCR did not confirm the expected browser text")
 
+        term_confirmation_found = bool(title_matches or focused_matches or ocr_matches)
+        browser_request = "browser" in action_text.lower() or browser_like
+        if expected_terms and browser_request and not term_confirmation_found:
+            if action_kind in {"click", "type_text", "hotkey"}:
+                blocking_reasons.append("expected page terms were not confirmed")
+            else:
+                score = max(0.0, score - 0.10)
+                reasons.append("expected page terms were not confirmed")
+
+        target_control = snapshot.get("target_control", {})
         if action_kind == "click":
             if target_control.get("ok") and target_control.get("bounds"):
                 score += 0.20
@@ -389,6 +427,32 @@ class PageUnderstandingEngine:
             if cleaned not in terms:
                 terms.append(cleaned)
         return terms[:6]
+
+    def _title_terms(self, title: str) -> list[str]:
+        stopwords = {
+            "google",
+            "search",
+            "images",
+            "image",
+            "chrome",
+            "edge",
+            "firefox",
+            "brave",
+            "browser",
+            "results",
+            "page",
+        }
+        terms: list[str] = []
+        for part in title.lower().replace("-", " ").split():
+            cleaned = "".join(ch for ch in part if ch.isalnum())
+            if len(cleaned) <= 2 or cleaned in stopwords:
+                continue
+            if cleaned not in terms:
+                terms.append(cleaned)
+        return terms[:6]
+
+    def _term_overlap(self, text: str, terms: list[str]) -> bool:
+        return any(term in text for term in terms)
 
     def _control_summary(self, payload: dict[str, Any]) -> str:
         if not payload.get("ok"):

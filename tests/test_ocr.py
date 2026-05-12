@@ -163,6 +163,204 @@ def test_confidence_can_use_ocr_text_but_cannot_click_from_ocr_alone(monkeypatch
     assert "no target bounds exist" in assessment["confidence_reason"]
 
 
+def test_known_good_google_results_page_scores_above_threshold(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_active_window_title",
+        lambda: {"ok": True, "title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+    )
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_focused_control",
+        lambda: {
+            "ok": True,
+            "control_type": "DocumentControl",
+            "name": "Code4life69 LocalPilot issue 4 - Google Search",
+            "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10},
+        },
+    )
+    monkeypatch.setattr("app.tools.page_understanding.list_visible_controls", lambda max_depth=1: {"ok": True, "controls": [{"control_type": "PaneControl", "name": "Chrome", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}}]})
+    monkeypatch.setattr("app.tools.page_understanding.get_mouse_position", lambda: {"ok": True, "x": 10, "y": 20})
+    monkeypatch.setattr("app.tools.page_understanding.get_control_at_point", lambda x, y: {"ok": True, "control_type": "GroupControl", "name": "(unnamed)", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}})
+    monkeypatch.setattr("app.tools.page_understanding.take_screenshot", lambda output_dir: {"ok": True, "path": str(tmp_path / "screen.png")})
+    monkeypatch.setattr(
+        "app.tools.page_understanding.read_image",
+        lambda image_path, output_dir: {
+            "ok": True,
+            "backend": "pytesseract",
+            "source_image": str(image_path),
+            "processed_image": str(tmp_path / "processed.png"),
+            "text": "Code4life69 LocalPilot issue 4 Google Search results",
+            "blocks": [{"text": "Code4life69", "confidence": 92.0}],
+            "confidence": 92.0,
+        },
+    )
+
+    app = DummyApp(tmp_path)
+    assessment = PageUnderstandingEngine(app).assess(
+        action_kind="inspect",
+        action_text="page confidence",
+        include_vision=False,
+    )
+
+    assert assessment["confidence_score"] >= 0.85
+    assert assessment["confidence_allowed"] is True
+
+
+def test_discord_active_window_scores_below_threshold(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.tools.page_understanding.get_active_window_title", lambda: {"ok": True, "title": "Chatting - Discord"})
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_focused_control",
+        lambda: {"ok": True, "control_type": "DocumentControl", "name": "Discord chat", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}},
+    )
+    monkeypatch.setattr("app.tools.page_understanding.list_visible_controls", lambda max_depth=1: {"ok": True, "controls": [{"control_type": "PaneControl", "name": "Discord", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}}]})
+    monkeypatch.setattr("app.tools.page_understanding.get_mouse_position", lambda: {"ok": True, "x": 10, "y": 20})
+    monkeypatch.setattr("app.tools.page_understanding.get_control_at_point", lambda x, y: {"ok": True, "control_type": "GroupControl", "name": "Discord", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}})
+    monkeypatch.setattr("app.tools.page_understanding.take_screenshot", lambda output_dir: {"ok": True, "path": str(tmp_path / "screen.png")})
+    monkeypatch.setattr(
+        "app.tools.page_understanding.read_image",
+        lambda image_path, output_dir: {
+            "ok": True,
+            "backend": "pytesseract",
+            "source_image": str(image_path),
+            "processed_image": str(tmp_path / "processed.png"),
+            "text": "Discord chat window",
+            "blocks": [{"text": "Discord", "confidence": 92.0}],
+            "confidence": 92.0,
+        },
+    )
+
+    app = DummyApp(tmp_path)
+    assessment = PageUnderstandingEngine(app).assess(
+        action_kind="inspect",
+        action_text="page confidence",
+        include_vision=False,
+    )
+
+    assert assessment["confidence_score"] < 0.85
+    assert assessment["confidence_allowed"] is False
+
+
+def test_focused_document_title_increases_confidence(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_active_window_title",
+        lambda: {"ok": True, "title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+    )
+    monkeypatch.setattr("app.tools.page_understanding.list_visible_controls", lambda max_depth=1: {"ok": True, "controls": []})
+    monkeypatch.setattr("app.tools.page_understanding.get_mouse_position", lambda: {"ok": True, "x": 10, "y": 20})
+    monkeypatch.setattr("app.tools.page_understanding.get_control_at_point", lambda x, y: {"ok": True, "control_type": "GroupControl", "name": "(unnamed)", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}})
+    monkeypatch.setattr("app.tools.page_understanding.take_screenshot", lambda output_dir: {"ok": True, "path": str(tmp_path / "screen.png")})
+    monkeypatch.setattr(
+        "app.tools.page_understanding.read_image",
+        lambda image_path, output_dir: {
+            "ok": True,
+            "backend": "pytesseract",
+            "source_image": str(image_path),
+            "processed_image": str(tmp_path / "processed.png"),
+            "text": "Code4life69 LocalPilot issue 4 Google Search results",
+            "blocks": [{"text": "Code4life69", "confidence": 92.0}],
+            "confidence": 92.0,
+        },
+    )
+
+    app = DummyApp(tmp_path)
+    engine = PageUnderstandingEngine(app)
+
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_focused_control",
+        lambda: {"ok": True, "control_type": "ButtonControl", "name": "Search", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}},
+    )
+    lower = engine.assess(action_kind="inspect", action_text="page confidence", include_vision=False)
+
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_focused_control",
+        lambda: {
+            "ok": True,
+            "control_type": "DocumentControl",
+            "name": "Code4life69 LocalPilot issue 4 - Google Search",
+            "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10},
+        },
+    )
+    higher = engine.assess(action_kind="inspect", action_text="page confidence", include_vision=False)
+
+    assert higher["confidence_score"] > lower["confidence_score"]
+
+
+def test_negative_vision_overrides_positive_term_presence(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_active_window_title",
+        lambda: {"ok": True, "title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+    )
+    monkeypatch.setattr(
+        "app.tools.page_understanding.get_focused_control",
+        lambda: {
+            "ok": True,
+            "control_type": "DocumentControl",
+            "name": "Code4life69 LocalPilot issue 4 - Google Search",
+            "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10},
+        },
+    )
+    monkeypatch.setattr("app.tools.page_understanding.list_visible_controls", lambda max_depth=1: {"ok": True, "controls": []})
+    monkeypatch.setattr("app.tools.page_understanding.get_mouse_position", lambda: {"ok": True, "x": 10, "y": 20})
+    monkeypatch.setattr("app.tools.page_understanding.get_control_at_point", lambda x, y: {"ok": True, "control_type": "GroupControl", "name": "(unnamed)", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}})
+    monkeypatch.setattr("app.tools.page_understanding.take_screenshot", lambda output_dir: {"ok": True, "path": str(tmp_path / "screen.png")})
+    monkeypatch.setattr(
+        "app.tools.page_understanding.read_image",
+        lambda image_path, output_dir: {
+            "ok": True,
+            "backend": "pytesseract",
+            "source_image": str(image_path),
+            "processed_image": str(tmp_path / "processed.png"),
+            "text": "Code4life69 LocalPilot issue 4 Google Search results",
+            "blocks": [{"text": "Code4life69", "confidence": 92.0}],
+            "confidence": 92.0,
+        },
+    )
+
+    app = DummyApp(tmp_path)
+    assessment = PageUnderstandingEngine(app).assess(
+        action_kind="inspect",
+        action_text="search for Code4life69 LocalPilot issue 4 in the browser",
+        include_vision=False,
+    )
+    assessment["vision_summary"] = "No, this is not the expected Google results page."
+    assessment["confidence_allowed"] = False
+
+    app = DummyApp(tmp_path)
+    monkeypatch.setattr(
+        PageUnderstandingEngine,
+        "snapshot",
+        lambda self, **kwargs: {
+            "ok": True,
+            "active_window": {"ok": True, "title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+            "focused_control": {
+                "ok": True,
+                "control_type": "DocumentControl",
+                "name": "Code4life69 LocalPilot issue 4 - Google Search",
+                "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10},
+            },
+            "visible_controls": {"ok": True, "controls": []},
+            "mouse_position": {"ok": True, "x": 10, "y": 20},
+            "target_control": {"ok": True, "control_type": "GroupControl", "name": "(unnamed)", "bounds": {"left": 1, "top": 1, "right": 10, "bottom": 10}},
+            "screenshot": {"ok": True, "path": str(tmp_path / "screen.png")},
+            "screenshot_path": str(tmp_path / "screen.png"),
+            "candidate_targets": [],
+            "ocr_available": True,
+            "ocr_text": "Code4life69 LocalPilot issue 4 Google Search results",
+            "ocr_blocks": [],
+            "ocr_backend": "pytesseract",
+            "ocr_confidence": 92.0,
+            "vision_summary": "No, this is not the expected Google results page.",
+        },
+    )
+    blocked = PageUnderstandingEngine(app).assess(
+        action_kind="inspect",
+        action_text="search for Code4life69 LocalPilot issue 4 in the browser",
+        include_vision=True,
+    )
+
+    assert blocked["confidence_allowed"] is False
+    assert blocked["confidence_reason"] == "vision says the target or page is not present"
+
+
 def test_workspace_debug_view_artifacts_are_git_ignored(tmp_path):
     repo_root = Path(__file__).resolve().parents[1]
     artifact = repo_root / "workspace" / "debug_views" / "ocr_test_artifact.png"
