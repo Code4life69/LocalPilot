@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import py_compile
 import re
+import subprocess
+import sys
+import time
 from datetime import datetime
 from html import escape
 from pathlib import Path
@@ -9,6 +12,8 @@ from typing import Any
 
 from app.tools import files as file_tools
 from app.tools import shell as shell_tools
+from app.tools.screen import get_active_window_basic
+from app.tools.windows_ui import get_active_window_title
 from app.tools.web import search_web
 
 
@@ -345,6 +350,7 @@ class CodeMode:
                 project_path=project_path,
                 app_kind=app_kind,
                 explicit_target=explicit_target,
+                settings=settings,
             )
             verification_history.append(
                 {
@@ -386,12 +392,8 @@ class CodeMode:
                 status = "completed"
                 break
 
-            if settings["stop_on_failed_verification"] and not verification["ok"]:
-                status = "verification_failed"
-                break
-
             if pass_index >= settings["max_passes"]:
-                status = "stopped_at_max_passes"
+                status = "verification_failed" if not verification["ok"] else "stopped_at_max_passes"
                 break
 
             improvement_result = self._apply_professional_improvements(
@@ -440,6 +442,8 @@ class CodeMode:
             "allow_web_research": True,
             "require_acceptance_checklist": True,
             "stop_on_failed_verification": True,
+            "launch_verification_enabled": True,
+            "launch_timeout_seconds": 8,
         }
         configured = self.app.settings.get("professional_build", {})
         return {**defaults, **configured}
@@ -520,7 +524,13 @@ class CodeMode:
             return {"ok": False, "error": failed[0].get("error", "Failed to write project files.")}
         return {"ok": True, "write_results": write_results}
 
-    def _run_professional_verification(self, project_path: Path, app_kind: str, explicit_target: bool) -> dict[str, Any]:
+    def _run_professional_verification(
+        self,
+        project_path: Path,
+        app_kind: str,
+        explicit_target: bool,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
         template = APP_TEMPLATES[app_kind]
         main_path = project_path / template["main_filename"]
         launcher_path = project_path / template["launcher_name"]
@@ -531,6 +541,12 @@ class CodeMode:
             checks_performed.append("static asset linkage")
         else:
             checks_performed.append("python syntax check")
+        launch_verification = self._verify_launch_readiness(
+            project_path=project_path,
+            app_kind=app_kind,
+            settings=settings,
+        )
+        checks_performed.append("launch verification")
 
         readme_text = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
         launcher_text = launcher_path.read_text(encoding="utf-8") if launcher_path.exists() else ""
@@ -552,6 +568,7 @@ class CodeMode:
             "workspace_safe": explicit_target or self._path_is_within(project_path, self._workspace_root().resolve()),
             "tests_or_checks_passed": base_verification.get("ok", False),
             "launch_ready": self._launcher_looks_ready(app_kind, launcher_text, template["main_filename"]),
+            "launch_verification": launch_verification,
             "error": base_verification.get("error", ""),
         }
         verification["ok"] = (
@@ -564,6 +581,7 @@ class CodeMode:
             and verification["error_handling_ok"]
             and verification["styling_ok"]
             and verification["workspace_safe"]
+            and launch_verification.get("passed", False)
         )
         return verification
 
@@ -587,6 +605,7 @@ class CodeMode:
             {"name": "Syntax/static checks pass", "passed": verification["tests_or_checks_passed"], "detail": verification.get("error", "") or ", ".join(verification["checks_performed"])},
             {"name": "Clear README exists", "passed": verification["readme_exists"] and verification["readme_clear"], "detail": "README exists and includes run instructions." if verification["readme_exists"] and verification["readme_clear"] else "README is missing or unclear."},
             {"name": "Double-click launcher works where applicable", "passed": verification["launcher_exists"] and verification["launcher_ready"], "detail": "Launcher file exists and points at the project entry point." if verification["launcher_exists"] and verification["launcher_ready"] else "Launcher is missing or does not point at the expected entry point."},
+            {"name": "Launch verification passed or skipped with reason", "passed": verification["launch_verification"]["passed"], "detail": verification["launch_verification"]["reason"]},
             {"name": "UI is usable", "passed": verification["ui_usable"], "detail": "The scaffold contains the expected UI structure for this project type." if verification["ui_usable"] else "The generated UI structure looks incomplete."},
             {"name": "Error handling exists", "passed": verification["error_handling_ok"], "detail": "Basic error handling is present where this project type needs it." if verification["error_handling_ok"] else "The scaffold still needs basic error handling."},
             {"name": "Styling is intentional", "passed": verification["styling_ok"], "detail": "The generated styling is intentional for this project type." if verification["styling_ok"] else "The generated styling still looks too bare."},
@@ -623,12 +642,15 @@ class CodeMode:
         if "readme_incomplete" in issue_codes or "checklist_missing" in issue_codes:
             self._update_professional_readme(project_path, app_kind, website_spec, professional_context)
             applied.append("Refreshed README with the current brief and acceptance checklist.")
+        if "launch_verification_failed" in issue_codes:
+            applied.append("Re-ran launch verification on the next pass after the failure was recorded.")
         return {"applied": applied}
 
     def _collect_known_limitations(self, verification: dict[str, Any], review: dict[str, Any]) -> list[str]:
-        limitations = [
-            "No automated GUI launch test was performed; launch readiness was checked statically.",
-        ]
+        launch_verification = verification.get("launch_verification", {})
+        limitations: list[str] = []
+        if launch_verification.get("status") != "passed":
+            limitations.append(launch_verification.get("reason", "Launch verification did not pass."))
         if verification.get("error"):
             limitations.append(verification["error"])
         for issue in review.get("issues", []):
@@ -691,8 +713,11 @@ class CodeMode:
             lines.append("- No additional automated improvements were necessary after self-review.")
         lines.append("")
         lines.append("Known limitations:")
-        for limitation in known_limitations:
-            lines.append(f"- {limitation}")
+        if known_limitations:
+            for limitation in known_limitations:
+                lines.append(f"- {limitation}")
+        else:
+            lines.append("- None.")
         if research is not None:
             lines.append("")
             lines.append("Research summary:")
@@ -720,6 +745,186 @@ class CodeMode:
     def _project_run_instructions(self, app_kind: str) -> str:
         template = APP_TEMPLATES[app_kind]
         return f"Double-click {template['launcher_name']}."
+
+    def _verify_launch_readiness(self, project_path: Path, app_kind: str, settings: dict[str, Any]) -> dict[str, Any]:
+        if not settings.get("launch_verification_enabled", True):
+            return {
+                "status": "skipped",
+                "passed": True,
+                "reason": "Launch verification is disabled in settings.",
+                "stdout": "",
+                "stderr": "",
+                "window_title": "",
+                "cleanup_performed": False,
+            }
+
+        if app_kind not in {"calculator", "notepad", "todo", "timer"}:
+            return {
+                "status": "skipped",
+                "passed": True,
+                "reason": "Launch verification is only required for generated Python GUI apps.",
+                "stdout": "",
+                "stderr": "",
+                "window_title": "",
+                "cleanup_performed": False,
+            }
+
+        safe_root = (self._workspace_root() / "generated_apps").resolve()
+        if not self._path_is_within(project_path, safe_root):
+            return {
+                "status": "skipped",
+                "passed": False,
+                "reason": "Launch verification was skipped because the project is outside workspace/generated_apps.",
+                "stdout": "",
+                "stderr": "",
+                "window_title": "",
+                "cleanup_performed": False,
+            }
+
+        main_path = project_path / APP_TEMPLATES[app_kind]["main_filename"]
+        if not main_path.exists():
+            return {
+                "status": "failed",
+                "passed": False,
+                "reason": f"Launch verification could not start because {main_path} is missing.",
+                "stdout": "",
+                "stderr": "",
+                "window_title": "",
+                "cleanup_performed": False,
+            }
+
+        command = [sys.executable, str(main_path)]
+        timeout_seconds = int(settings.get("launch_timeout_seconds", 8))
+        process = None
+        result: dict[str, Any] | None = None
+        cleanup_performed = False
+        try:
+            process = self._spawn_launch_process(command, project_path)
+            result = self._wait_for_launch_result(process, project_path, app_kind, timeout_seconds)
+        finally:
+            if process is not None:
+                cleanup_performed = self._cleanup_launch_process(process)
+        if result is None:
+            result = {
+                "status": "failed",
+                "passed": False,
+                "reason": "Launch verification did not produce a result.",
+                "stdout": "",
+                "stderr": "",
+                "window_title": "",
+            }
+        return {**result, "cleanup_performed": cleanup_performed}
+
+    def _spawn_launch_process(self, command: list[str], project_path: Path):
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        return subprocess.Popen(
+            command,
+            cwd=str(project_path),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            creationflags=creationflags,
+        )
+
+    def _wait_for_launch_result(
+        self,
+        process,
+        project_path: Path,
+        app_kind: str,
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        deadline = time.monotonic() + max(timeout_seconds, 1)
+        expected_titles = self._expected_window_titles(app_kind)
+        last_detected_title = ""
+        while time.monotonic() < deadline:
+            exit_code = process.poll()
+            if exit_code is not None:
+                stdout, stderr = self._collect_process_output(process, timeout=1)
+                detail = stderr.strip() or stdout.strip() or f"Process exited with code {exit_code}."
+                return {
+                    "status": "failed",
+                    "passed": False,
+                    "reason": f"Launch verification failed: {detail}",
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "window_title": "",
+                }
+
+            detected_title = self._detect_window_title(expected_titles)
+            if detected_title:
+                stdout, stderr = self._collect_process_output(process, timeout=0.2)
+                return {
+                    "status": "passed",
+                    "passed": True,
+                    "reason": f"Launch verification passed. Detected window title: {detected_title}",
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "window_title": detected_title,
+                }
+            last_detected_title = detected_title or last_detected_title
+            time.sleep(0.2)
+
+        stdout, stderr = self._collect_process_output(process, timeout=0.2)
+        if process.poll() is None:
+            return {
+                "status": "timeout",
+                "passed": False,
+                "reason": "Launch verification timed out before a matching window title was detected.",
+                "stdout": stdout,
+                "stderr": stderr,
+                "window_title": last_detected_title,
+            }
+
+        exit_code = process.poll()
+        detail = stderr.strip() or stdout.strip() or f"Process exited with code {exit_code}."
+        return {
+            "status": "failed",
+            "passed": False,
+            "reason": f"Launch verification failed: {detail}",
+            "stdout": stdout,
+            "stderr": stderr,
+            "window_title": last_detected_title,
+        }
+
+    def _expected_window_titles(self, app_kind: str) -> list[str]:
+        return [
+            APP_TEMPLATES[app_kind]["display_name"].lower(),
+            app_kind.lower(),
+        ]
+
+    def _detect_window_title(self, expected_titles: list[str]) -> str:
+        title_candidates: list[str] = []
+        uia = get_active_window_title()
+        if uia.get("ok"):
+            title_candidates.append(uia.get("title", ""))
+        basic = get_active_window_basic()
+        if basic.get("ok"):
+            title_candidates.append(basic.get("title", ""))
+        for title in title_candidates:
+            lowered = title.lower()
+            if title and any(expected in lowered for expected in expected_titles):
+                return title
+        return ""
+
+    def _collect_process_output(self, process, timeout: float) -> tuple[str, str]:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+            return stdout or "", stderr or ""
+        except subprocess.TimeoutExpired:
+            return "", ""
+
+    def _cleanup_launch_process(self, process) -> bool:
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            return True
+        except Exception:
+            return False
 
     def _path_is_within(self, path: Path, root: Path) -> bool:
         try:
@@ -763,6 +968,7 @@ class CodeMode:
             "Acceptance checklist created": "checklist_missing",
             "Clear README exists": "readme_incomplete",
             "Double-click launcher works where applicable": "launcher_incomplete",
+            "Launch verification passed or skipped with reason": "launch_verification_failed",
             "Required files exist": "missing_files",
             "Syntax/static checks pass": "verification_failed",
             "Error handling exists": "error_handling_missing",

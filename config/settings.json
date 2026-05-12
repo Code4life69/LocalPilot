@@ -51,6 +51,8 @@
     "max_passes": 3,
     "allow_web_research": true,
     "require_acceptance_checklist": true,
-    "stop_on_failed_verification": true
+    "stop_on_failed_verification": true,
+    "launch_verification_enabled": true,
+    "launch_timeout_seconds": 8
   }
 }

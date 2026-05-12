@@ -31,6 +31,8 @@ class DummyApp:
                 "allow_web_research": True,
                 "require_acceptance_checklist": True,
                 "stop_on_failed_verification": True,
+                "launch_verification_enabled": True,
+                "launch_timeout_seconds": 8,
             }
         }
         self.system_prompt = "system prompt"
@@ -234,9 +236,22 @@ def test_natural_language_file_creation_asks_before_overwrite(tmp_path):
     assert target.read_text(encoding="utf-8") == "existing"
 
 
-def test_professional_build_creates_acceptance_checklist_and_verifies(tmp_path):
+def test_professional_build_creates_acceptance_checklist_and_verifies(tmp_path, monkeypatch):
     app = DummyApp(tmp_path)
     mode = CodeMode(app)
+    monkeypatch.setattr(
+        mode,
+        "_verify_launch_readiness",
+        lambda project_path, app_kind, settings: {
+            "status": "passed",
+            "passed": True,
+            "reason": "Launch verification passed in test.",
+            "stdout": "",
+            "stderr": "",
+            "window_title": APP_TEMPLATES[app_kind]["display_name"],
+            "cleanup_performed": True,
+        },
+    )
 
     result = mode.handle({"user_text": "professional build make me a notepad app with a gui and double click starter"})
 
@@ -249,11 +264,25 @@ def test_professional_build_creates_acceptance_checklist_and_verifies(tmp_path):
     assert result["project_path"].startswith(str(tmp_path / "workspace" / "generated_apps"))
     assert "Professional build completed." in result["message"]
     assert "Known limitations:" in result["message"]
+    assert "Launch verification passed or skipped with reason" in result["message"]
 
 
-def test_professional_build_does_not_claim_done_if_verification_fails(tmp_path):
+def test_professional_build_does_not_claim_done_if_verification_fails(tmp_path, monkeypatch):
     app = DummyApp(tmp_path)
     mode = CodeMode(app)
+    monkeypatch.setattr(
+        mode,
+        "_verify_launch_readiness",
+        lambda project_path, app_kind, settings: {
+            "status": "passed",
+            "passed": True,
+            "reason": "Launch verification passed in test.",
+            "stdout": "",
+            "stderr": "",
+            "window_title": APP_TEMPLATES[app_kind]["display_name"],
+            "cleanup_performed": True,
+        },
+    )
 
     original_verify = mode._run_professional_verification
 
@@ -273,10 +302,23 @@ def test_professional_build_does_not_claim_done_if_verification_fails(tmp_path):
     assert "Syntax verification failed for generated project." in result["message"]
 
 
-def test_professional_build_stops_after_max_passes(tmp_path):
+def test_professional_build_stops_after_max_passes(tmp_path, monkeypatch):
     app = DummyApp(tmp_path)
     app.settings["professional_build"]["max_passes"] = 2
     mode = CodeMode(app)
+    monkeypatch.setattr(
+        mode,
+        "_verify_launch_readiness",
+        lambda project_path, app_kind, settings: {
+            "status": "passed",
+            "passed": True,
+            "reason": "Launch verification passed in test.",
+            "stdout": "",
+            "stderr": "",
+            "window_title": APP_TEMPLATES[app_kind]["display_name"],
+            "cleanup_performed": True,
+        },
+    )
 
     original_verify = mode._run_professional_verification
     mode._run_professional_verification = original_verify
@@ -298,6 +340,163 @@ def test_professional_build_stops_after_max_passes(tmp_path):
     assert result["ok"] is False
     assert result["status"] == "stopped_at_max_passes"
     assert result["passes_completed"] == 2
+
+
+def test_launch_verifier_handles_successful_subprocess(tmp_path, monkeypatch):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+    project_path = tmp_path / "workspace" / "generated_apps" / "NotepadApp_Test"
+    project_path.mkdir(parents=True, exist_ok=True)
+    main_path = project_path / "main.py"
+    main_path.write_text("print('ok')\n", encoding="utf-8")
+
+    class FakeProcess:
+        def __init__(self):
+            self.terminated = False
+
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    fake_process = FakeProcess()
+    monkeypatch.setattr(mode, "_spawn_launch_process", lambda command, cwd: fake_process)
+    monkeypatch.setattr(mode, "_detect_window_title", lambda expected: "Notepad")
+
+    result = mode._verify_launch_readiness(project_path, "notepad", app.settings["professional_build"])
+
+    assert result["passed"] is True
+    assert result["status"] == "passed"
+    assert result["window_title"] == "Notepad"
+    assert result["cleanup_performed"] is True
+    assert fake_process.terminated is True
+
+
+def test_launch_verifier_handles_timeout(tmp_path, monkeypatch):
+    app = DummyApp(tmp_path)
+    app.settings["professional_build"]["launch_timeout_seconds"] = 1
+    mode = CodeMode(app)
+    project_path = tmp_path / "workspace" / "generated_apps" / "TimerApp_Test"
+    project_path.mkdir(parents=True, exist_ok=True)
+    (project_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    fake_process = FakeProcess()
+    times = iter([0.0, 2.0])
+    monkeypatch.setattr(mode, "_spawn_launch_process", lambda command, cwd: fake_process)
+    monkeypatch.setattr(mode, "_detect_window_title", lambda expected: "")
+    monkeypatch.setattr("app.modes.code_mode.time.monotonic", lambda: next(times))
+    monkeypatch.setattr("app.modes.code_mode.time.sleep", lambda seconds: None)
+
+    result = mode._verify_launch_readiness(project_path, "timer", app.settings["professional_build"])
+
+    assert result["passed"] is False
+    assert result["status"] == "timeout"
+    assert "timed out" in result["reason"].lower()
+
+
+def test_launch_verifier_handles_crash_and_stderr(tmp_path, monkeypatch):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+    project_path = tmp_path / "workspace" / "generated_apps" / "CalculatorApp_Test"
+    project_path.mkdir(parents=True, exist_ok=True)
+    (project_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    class FakeProcess:
+        def poll(self):
+            return 1
+
+        def communicate(self, timeout=None):
+            return ("", "Traceback: boom")
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 1
+
+    monkeypatch.setattr(mode, "_spawn_launch_process", lambda command, cwd: FakeProcess())
+
+    result = mode._verify_launch_readiness(project_path, "calculator", app.settings["professional_build"])
+
+    assert result["passed"] is False
+    assert result["status"] == "failed"
+    assert "traceback: boom" in result["reason"].lower()
+    assert result["stderr"] == "Traceback: boom"
+
+
+def test_professional_build_does_not_mark_completed_when_launch_verification_fails(tmp_path, monkeypatch):
+    app = DummyApp(tmp_path)
+    app.settings["professional_build"]["max_passes"] = 2
+    mode = CodeMode(app)
+    monkeypatch.setattr(
+        mode,
+        "_verify_launch_readiness",
+        lambda project_path, app_kind, settings: {
+            "status": "failed",
+            "passed": False,
+            "reason": "Launch verification failed: window title never appeared.",
+            "stdout": "",
+            "stderr": "",
+            "window_title": "",
+            "cleanup_performed": True,
+        },
+    )
+    result = mode.handle({"user_text": "professional build make me a notepad app with a gui and double click starter"})
+
+    assert result["ok"] is False
+    assert result["status"] == "verification_failed"
+    assert "Launch verification failed" in result["message"]
+
+
+def test_launch_verifier_calls_cleanup(tmp_path, monkeypatch):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+    project_path = tmp_path / "workspace" / "generated_apps" / "TodoApp_Test"
+    project_path.mkdir(parents=True, exist_ok=True)
+    (project_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def communicate(self, timeout=None):
+            return ("", "")
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+    cleanup_calls = []
+    monkeypatch.setattr(mode, "_spawn_launch_process", lambda command, cwd: FakeProcess())
+    monkeypatch.setattr(mode, "_detect_window_title", lambda expected: "Todo List")
+    monkeypatch.setattr(mode, "_cleanup_launch_process", lambda process: cleanup_calls.append(True) or True)
+
+    result = mode._verify_launch_readiness(project_path, "todo", app.settings["professional_build"])
+
+    assert result["passed"] is True
+    assert cleanup_calls == [True]
 
 
 def test_professional_build_respects_overwrite_approval(tmp_path):
@@ -324,6 +523,19 @@ def test_professional_build_can_request_research(tmp_path, monkeypatch):
     app = DummyApp(tmp_path)
     mode = CodeMode(app)
     calls = []
+    monkeypatch.setattr(
+        mode,
+        "_verify_launch_readiness",
+        lambda project_path, app_kind, settings: {
+            "status": "skipped",
+            "passed": True,
+            "reason": "Launch verification is only required for generated Python GUI apps.",
+            "stdout": "",
+            "stderr": "",
+            "window_title": "",
+            "cleanup_performed": False,
+        },
+    )
 
     def fake_search(query, max_results=3):
         calls.append(query)

@@ -60,6 +60,8 @@ def test_professional_build_config_defaults_are_present():
     assert settings["professional_build"]["enabled"] is True
     assert settings["professional_build"]["max_passes"] == 3
     assert settings["professional_build"]["allow_web_research"] is True
+    assert settings["professional_build"]["launch_verification_enabled"] is True
+    assert settings["professional_build"]["launch_timeout_seconds"] == 8
 
 
 def test_coder_role_falls_back_when_primary_missing():
