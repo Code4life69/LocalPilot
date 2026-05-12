@@ -560,10 +560,26 @@ class DesktopExecutionFlow:
             lines.append(f"- [{marker}] {step['step']}")
             lines.append(f"  {step['detail']}")
         if snapshot:
+            verification = snapshot.get("verification", {})
             title = snapshot.get("active_window", {}).get("title")
             if title:
                 lines.append("")
                 lines.append(f"Active window: {title}")
+            if verification:
+                lines.append(f"Page verified: {verification.get('page_verified', False)}")
+                lines.append(f"Objective verified: {verification.get('objective_verified', False)}")
+                lines.append(
+                    "Page state confidence: "
+                    f"{float(verification.get('page_state_confidence', 0.0)):.2f}"
+                )
+                lines.append(
+                    "Objective match confidence: "
+                    f"{float(verification.get('objective_match_confidence', 0.0)):.2f}"
+                )
+                lines.append(f"Verification result: {verification.get('result', status)}")
+                reason = verification.get("reason", "")
+                if reason:
+                    lines.append(f"Reason: {reason}")
             vision = snapshot.get("vision_analysis")
             if vision:
                 lines.append(f"Vision: {vision}")

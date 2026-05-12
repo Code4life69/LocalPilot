@@ -319,3 +319,42 @@ def test_failed_verification_returns_ok_false():
     assert result["vision_summary"] == "No, this is not a Google results page for Code4life69 LocalPilot issue 4."
     assert result["content"].startswith("Desktop execution stopped.")
     assert flow.app.desktop_lessons.entries[0]["type"] == "verification_failure"
+
+
+def test_partial_verification_summary_exposes_page_and_objective_state():
+    flow = DesktopExecutionFlow(DummyApp())
+    step = PlannedStep(
+        name="verify_search",
+        description="Verify that Google search results are visible",
+        kind="verify",
+        expected_terms=["code4life69", "localpilot", "issue"],
+        vision_prompt="Check whether this is a Google results page for Code4life69 LocalPilot issue 4.",
+    )
+    partial_snapshot = {
+        "active_window": {"title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome"},
+        "vision_analysis": "The page is a Google search results page, but the first result appears unrelated.",
+        "verification": {
+            "verified": False,
+            "verification_source": "mixed",
+            "reason": "Search page opened, but I could not verify the correct target result.",
+            "active_window_title": "Code4life69 LocalPilot issue 4 - Google Search - Google Chrome",
+            "vision_summary": "The page is a Google search results page, but the first result appears unrelated.",
+            "page_state_confidence": 0.9,
+            "objective_match_confidence": 0.2,
+            "page_verified": True,
+            "objective_verified": False,
+            "result": "partial",
+        },
+    }
+    flow._build_plan = lambda _text: [step]
+    flow._run_step = lambda _step: (False, "Search page opened, but I could not verify the correct target result.", partial_snapshot)
+
+    result = flow.execute("search for Code4life69 LocalPilot issue 4 on google in the browser")
+
+    assert result["ok"] is False
+    assert result["result"] == "partial"
+    assert "Desktop execution partially completed." in result["content"]
+    assert "Page verified: True" in result["content"]
+    assert "Objective verified: False" in result["content"]
+    assert "Page state confidence: 0.90" in result["content"]
+    assert "Objective match confidence: 0.20" in result["content"]
