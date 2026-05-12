@@ -1,6 +1,7 @@
 {
   "app_name": "LocalPilot",
   "enable_gui": true,
+  "enable_cli_thread_with_gui": false,
   "active_model_role": "main",
   "active_performance_profile": "rtx3060_balanced",
   "logs_dir": "logs",

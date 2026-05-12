@@ -10,7 +10,7 @@ import tkinter as tk
 import atexit
 import time
 from pathlib import Path
-from tkinter import messagebox, scrolledtext, ttk
+from tkinter import scrolledtext, ttk
 from typing import Any
 
 from app.git_sync import GitSyncManager
@@ -99,10 +99,13 @@ class LocalPilotApp:
         self.logger.event(role, message, persist=False, trigger=trigger)
 
     def _approval_callback(self, prompt: str) -> bool:
-        self.logger.event("Safety", "Confirmation required", prompt=prompt)
+        self.logger.event("Safety", "Approval pending", prompt=prompt)
         if self.gui is not None:
-            return self.gui.request_approval(prompt)
-        return self._cli_approval(prompt)
+            approved = self.gui.request_approval(prompt)
+        else:
+            approved = self._cli_approval(prompt)
+        self.logger.event("Safety", "Approval accepted" if approved else "Approval denied", prompt=prompt)
+        return approved
 
     def _cli_approval(self, prompt: str) -> bool:
         reply = input(f"{prompt}\nApprove? y/n: ").strip().lower()
@@ -308,6 +311,7 @@ class LocalPilotGUI:
         self.desktop_overlay: tk.Toplevel | None = None
         self.desktop_overlay_action_label: tk.Label | None = None
         self.desktop_overlay_shown_at: float | None = None
+        self.approval_window: tk.Toplevel | None = None
         self.memory_text: scrolledtext.ScrolledText | None = None
         self.last_debug_image_path: Path | None = None
         self._build_widgets()
@@ -473,6 +477,8 @@ class LocalPilotGUI:
             self.role_var.set(role)
             if role.startswith("Mode:"):
                 self.mode_var.set(role.replace("Mode:", "").strip())
+            if role == "Safety":
+                self._update_safety_state(message)
             line = f"[{event['timestamp']}] {role} -> {message}\n"
             self._append_readonly(self.timeline, line)
             self._append_readonly(self.logs, line)
@@ -483,12 +489,18 @@ class LocalPilotGUI:
         approved = {"value": False}
         done = threading.Event()
 
-        def ask() -> None:
-            approved["value"] = messagebox.askyesno("LocalPilot Approval", prompt, parent=self.root)
-            done.set()
+        def show_dialog() -> None:
+            self.safety_var.set("Waiting for approval")
+            dialog = self._build_approval_window(prompt, approved, done)
+            self.approval_window = dialog
 
-        self.root.after(0, ask)
-        done.wait()
+        if threading.current_thread() is threading.main_thread():
+            show_dialog()
+            if self.approval_window is not None and self.approval_window.winfo_exists():
+                self.root.wait_window(self.approval_window)
+        else:
+            self.root.after(0, show_dialog)
+            done.wait()
         return approved["value"]
 
     def run(self) -> None:
@@ -566,7 +578,8 @@ class LocalPilotGUI:
             self.app.ollama.active_vision_model
             or self.app.model_profiles.get("vision", {}).get("model", "n/a")
         )
-        self.safety_var.set("Guarded")
+        if not self.safety_var.get():
+            self.safety_var.set("Guarded")
 
     def _load_memory_panel(self) -> None:
         if self.memory_text is None:
@@ -632,6 +645,111 @@ class LocalPilotGUI:
             speaker_tag="assistant",
         )
         self._append_readonly(self.logs, "Recent logs will appear here as the session runs.\n")
+
+    def _build_approval_window(self, prompt: str, approved: dict[str, bool], done: threading.Event) -> tk.Toplevel:
+        if self.approval_window is not None and self.approval_window.winfo_exists():
+            try:
+                self.approval_window.destroy()
+            except tk.TclError:
+                pass
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("LocalPilot Approval")
+        dialog.configure(bg=self.colors["panel"])
+        dialog.resizable(False, False)
+        dialog.attributes("-topmost", True)
+        dialog.transient(self.root)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+
+        width = 640
+        height = 300
+        try:
+            root_x = self.root.winfo_rootx()
+            root_y = self.root.winfo_rooty()
+            root_w = self.root.winfo_width()
+            root_h = self.root.winfo_height()
+            pos_x = root_x + max((root_w - width) // 2, 40)
+            pos_y = root_y + max((root_h - height) // 2, 40)
+            dialog.geometry(f"{width}x{height}+{pos_x}+{pos_y}")
+        except tk.TclError:
+            dialog.geometry(f"{width}x{height}+420+220")
+
+        header = tk.Label(
+            dialog,
+            text="Approval Required",
+            font=("Segoe UI", 18, "bold"),
+            fg=self.colors["text"],
+            bg=self.colors["panel"],
+        )
+        header.pack(anchor="w", padx=20, pady=(18, 10))
+
+        body = scrolledtext.ScrolledText(
+            dialog,
+            wrap=tk.WORD,
+            height=9,
+            font=("Segoe UI", 11),
+            bg=self.colors["surface"],
+            fg=self.colors["text"],
+            insertbackground=self.colors["text"],
+            relief="flat",
+            bd=0,
+            padx=12,
+            pady=12,
+        )
+        body.pack(fill="both", expand=True, padx=20)
+        body.insert("1.0", prompt)
+        body.configure(state="disabled")
+
+        button_row = tk.Frame(dialog, bg=self.colors["panel"])
+        button_row.pack(fill="x", padx=20, pady=18)
+
+        def finish(value: bool) -> None:
+            approved["value"] = value
+            self.safety_var.set("Guarded")
+            if dialog.winfo_exists():
+                try:
+                    dialog.grab_release()
+                except Exception:
+                    pass
+                dialog.destroy()
+            self.approval_window = None
+            done.set()
+
+        deny = ttk.Button(button_row, text="Deny", command=lambda: finish(False), style="Action.TButton")
+        deny.pack(side="right")
+        allow = ttk.Button(button_row, text="Allow", command=lambda: finish(True), style="Action.TButton")
+        allow.pack(side="right", padx=(0, 10))
+
+        try:
+            dialog.grab_set()
+        except Exception:
+            pass
+        dialog.deiconify()
+        dialog.lift()
+        try:
+            dialog.focus_force()
+        except tk.TclError:
+            pass
+        self.root.after(100, lambda: self._refresh_approval_window(dialog))
+        allow.focus_set()
+        return dialog
+
+    def _refresh_approval_window(self, dialog: tk.Toplevel) -> None:
+        if dialog is None or not dialog.winfo_exists():
+            return
+        dialog.attributes("-topmost", True)
+        dialog.lift()
+        try:
+            dialog.focus_force()
+        except tk.TclError:
+            pass
+
+    def _update_safety_state(self, message: str) -> None:
+        lowered = message.lower()
+        if "approval pending" in lowered:
+            self.safety_var.set("Waiting for approval")
+        elif "approval accepted" in lowered or "approval denied" in lowered:
+            self.safety_var.set("Guarded")
 
     def _theme_colors(self, theme: str) -> dict[str, str]:
         if theme == "light":
@@ -911,8 +1029,9 @@ def main(argv: list[str] | None = None) -> int:
         try:
             gui = LocalPilotGUI(app)
             app.attach_gui(gui)
-            cli_thread = threading.Thread(target=run_cli, args=(app,), daemon=True)
-            cli_thread.start()
+            if bool(app.settings.get("enable_cli_thread_with_gui", False)):
+                cli_thread = threading.Thread(target=run_cli, args=(app,), daemon=True)
+                cli_thread.start()
             gui.run()
             return 0
         except Exception as exc:

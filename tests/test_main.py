@@ -162,6 +162,75 @@ def test_main_system_doctor_flag_prints_without_gui(monkeypatch):
     assert calls["output"] == ["System doctor\n- UI Automation: dependency_missing"]
 
 
+def test_approval_callback_logs_pending_and_acceptance():
+    events = []
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.logger = SimpleNamespace(event=lambda role, message, **extra: events.append((role, message, extra)))
+    app.gui = SimpleNamespace(request_approval=lambda prompt: True)
+
+    approved = app._approval_callback("Approve desktop execution?")
+
+    assert approved is True
+    assert events[0][0:2] == ("Safety", "Approval pending")
+    assert events[1][0:2] == ("Safety", "Approval accepted")
+
+
+def test_approval_callback_logs_denial():
+    events = []
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.logger = SimpleNamespace(event=lambda role, message, **extra: events.append((role, message, extra)))
+    app.gui = SimpleNamespace(request_approval=lambda prompt: False)
+
+    approved = app._approval_callback("Approve desktop execution?")
+
+    assert approved is False
+    assert events[0][0:2] == ("Safety", "Approval pending")
+    assert events[1][0:2] == ("Safety", "Approval denied")
+
+
+def test_gui_safety_state_updates_from_events():
+    values = []
+
+    class FakeVar:
+        def set(self, value):
+            values.append(value)
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.safety_var = FakeVar()
+
+    gui._update_safety_state("Approval pending")
+    gui._update_safety_state("Approval accepted")
+    gui._update_safety_state("Approval denied")
+
+    assert values == ["Waiting for approval", "Guarded", "Guarded"]
+
+
+def test_refresh_status_bar_preserves_waiting_approval_state():
+    class FakeVar:
+        def __init__(self, value=""):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.app = SimpleNamespace(
+        ollama=SimpleNamespace(last_status="running", active_main_model="qwen3:8b", active_vision_model="qwen2.5vl:7b"),
+        model_profiles={"main": {"model": "qwen3:8b"}, "vision": {"model": "qwen2.5vl:7b"}},
+    )
+    gui.ollama_var = FakeVar()
+    gui.main_model_var = FakeVar()
+    gui.vision_model_var = FakeVar()
+    gui.safety_var = FakeVar("Waiting for approval")
+
+    gui._refresh_status_bar()
+
+    assert gui.safety_var.get() == "Waiting for approval"
+
+
 def test_show_desktop_busy_overlay_waits_for_background_thread_build(monkeypatch):
     gui = LocalPilotGUI.__new__(LocalPilotGUI)
     gui.app = SimpleNamespace(settings={"desktop_guard": {"show_overlay": True}})
@@ -191,3 +260,80 @@ def test_show_desktop_busy_overlay_waits_for_background_thread_build(monkeypatch
     gui.show_desktop_busy_overlay("type text")
 
     assert called["count"] == 1
+
+
+def test_main_does_not_start_cli_thread_with_gui_when_disabled(monkeypatch):
+    thread_calls = {"created": 0}
+
+    class FakeApp:
+        def __init__(self, root_dir):
+            self.root_dir = root_dir
+            self.settings = {"enable_gui": True, "enable_cli_thread_with_gui": False}
+
+        def attach_gui(self, gui):
+            self.gui = gui
+
+        def shutdown(self):
+            return None
+
+    class FakeGUI:
+        def __init__(self, app):
+            self.app = app
+
+        def run(self):
+            return None
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            thread_calls["created"] += 1
+
+        def start(self):
+            thread_calls["created"] += 100
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", FakeApp)
+    monkeypatch.setattr(main_module, "LocalPilotGUI", FakeGUI)
+    monkeypatch.setattr(main_module.threading, "Thread", FakeThread)
+
+    exit_code = main_module.main([])
+
+    assert exit_code == 0
+    assert thread_calls["created"] == 0
+
+
+def test_main_starts_cli_thread_with_gui_when_enabled(monkeypatch):
+    thread_calls = {"created": 0, "started": 0}
+
+    class FakeApp:
+        def __init__(self, root_dir):
+            self.root_dir = root_dir
+            self.settings = {"enable_gui": True, "enable_cli_thread_with_gui": True}
+
+        def attach_gui(self, gui):
+            self.gui = gui
+
+        def shutdown(self):
+            return None
+
+    class FakeGUI:
+        def __init__(self, app):
+            self.app = app
+
+        def run(self):
+            return None
+
+    class FakeThread:
+        def __init__(self, *args, **kwargs):
+            thread_calls["created"] += 1
+
+        def start(self):
+            thread_calls["started"] += 1
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", FakeApp)
+    monkeypatch.setattr(main_module, "LocalPilotGUI", FakeGUI)
+    monkeypatch.setattr(main_module.threading, "Thread", FakeThread)
+
+    exit_code = main_module.main([])
+
+    assert exit_code == 0
+    assert thread_calls["created"] == 1
+    assert thread_calls["started"] == 1
