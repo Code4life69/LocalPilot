@@ -630,6 +630,10 @@ class OllamaClient:
         if not model_name:
             preferred = model_name_override or self.model_profiles.get("vision", {}).get("model", "vision model")
             return {"ok": False, "error": f"Vision unavailable: model `{preferred}` is not installed.\nRun: ollama pull {preferred}"}
+        effective_think = think
+        effective_num_predict = num_predict
+        if effective_think is None and self._model_family(model_name) == "gemma4":
+            effective_num_predict = max(num_predict, 256)
 
         preprocessing = self.preprocess_vision_image(image_file, request_mode=request_mode, max_width=max_width)
         processed_path = Path(preprocessing["processed_path"])
@@ -638,7 +642,7 @@ class OllamaClient:
         options = {
             "num_ctx": vision_profile.get("num_ctx", 4096),
             "temperature": vision_profile.get("temperature", 0.1),
-            "num_predict": num_predict,
+            "num_predict": effective_num_predict,
         }
 
         attempts = [
@@ -673,9 +677,9 @@ class OllamaClient:
         if vision_profile.get("keep_alive"):
             for _, payload, _ in attempts:
                 payload["keep_alive"] = vision_profile["keep_alive"]
-        if think is not None:
+        if effective_think is not None:
             for _, payload, _ in attempts:
-                payload["think"] = think
+                payload["think"] = effective_think
 
         last_diagnostic: dict[str, Any] | None = None
         for endpoint, payload, attempt_mode in attempts:

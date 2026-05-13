@@ -565,6 +565,56 @@ def test_gemma_vision_request_includes_think_false(tmp_path, monkeypatch):
     assert result["think_disabled"] is True
 
 
+def test_default_gemma_vision_role_keeps_thinking_and_boosts_budget(tmp_path, monkeypatch):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    image_path = tmp_path / "vision_input.png"
+    Image.new("RGB", (64, 64), (20, 30, 40)).save(image_path)
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["gemma4:31b"]
+
+    captured_payloads = []
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        text = '{"ok":true}'
+
+        def json(self):
+            return {
+                "message": {"content": "A simple image with no text."},
+                "done_reason": "stop",
+                "eval_count": 12,
+                "eval_duration": 1_000_000_000,
+                "load_duration": 100_000_000,
+            }
+
+    def fake_post(url, json=None, timeout=None):
+        captured_payloads.append(json)
+        return FakeResponse()
+
+    monkeypatch.setattr("app.llm.ollama_client.requests.post", fake_post)
+
+    result = client._run_vision_request(
+        prompt="Describe this image.",
+        image_path=image_path,
+        request_mode="unit_test_default_gemma",
+    )
+
+    assert result["ok"] is True
+    assert captured_payloads
+    assert "think" not in captured_payloads[0]
+    assert captured_payloads[0]["options"]["num_predict"] == 256
+
+
 def test_empty_visible_content_with_thinking_is_reported_clearly(tmp_path, monkeypatch):
     profiles = load_model_profiles()
     settings = load_settings()
