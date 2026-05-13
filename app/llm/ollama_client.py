@@ -645,6 +645,7 @@ class OllamaClient:
             "temperature": vision_profile.get("temperature", 0.1),
             "num_predict": effective_num_predict,
         }
+        request_timeout = max(self.timeout_seconds, 300) if gemma_thinking_mode else self.timeout_seconds
 
         attempts = [
             (
@@ -688,7 +689,7 @@ class OllamaClient:
                 response = requests.post(
                     endpoint,
                     json=payload,
-                    timeout=self.timeout_seconds,
+                    timeout=request_timeout,
                 )
                 if response.ok:
                     data = response.json()
@@ -733,7 +734,7 @@ class OllamaClient:
                         retry_response = requests.post(
                             endpoint,
                             json=retry_payload,
-                            timeout=self.timeout_seconds,
+                            timeout=request_timeout,
                         )
                         if retry_response.ok:
                             retry_data = retry_response.json()
