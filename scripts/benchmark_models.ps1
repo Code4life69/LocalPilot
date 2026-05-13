@@ -88,7 +88,7 @@ if (-not (Test-OllamaReachable)) {
 Write-Host "Benchmarking recommended LocalPilot models..." -ForegroundColor Cyan
 
 $textBenchmarks = @(
-    @{ Label = "main"; Model = "qwen3:8b"; Prompt = "Say one short sentence about local AI."; NumCtx = 4096; Temperature = 0.35 },
+    @{ Label = "main"; Model = "gemma4:31b"; Prompt = "Say one short sentence about local AI."; NumCtx = 4096; Temperature = 0.35 },
     @{ Label = "coder"; Model = "qwen2.5-coder:14b-instruct-q3_K_M"; Prompt = "Write a tiny Python function that adds two numbers."; NumCtx = 4096; Temperature = 0.2 },
     @{ Label = "coder_fallback"; Model = "qwen2.5-coder:7b"; Prompt = "Write a tiny Python function that adds two numbers."; NumCtx = 4096; Temperature = 0.2 },
     @{ Label = "router"; Model = "granite3.3:2b"; Prompt = "Classify this request as chat, code, research, desktop, or memory: show notes"; NumCtx = 2048; Temperature = 0.0 }

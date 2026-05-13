@@ -261,8 +261,8 @@ def test_refresh_status_bar_preserves_waiting_approval_state():
 
     gui = LocalPilotGUI.__new__(LocalPilotGUI)
     gui.app = SimpleNamespace(
-        ollama=SimpleNamespace(last_status="running", active_main_model="qwen3:8b", active_vision_model="qwen2.5vl:7b"),
-        model_profiles={"main": {"model": "qwen3:8b"}, "vision": {"model": "qwen2.5vl:7b"}},
+        ollama=SimpleNamespace(last_status="running", active_main_model="gemma4:31b", active_vision_model="qwen2.5vl:7b"),
+        model_profiles={"main": {"model": "gemma4:31b"}, "vision": {"model": "qwen2.5vl:7b"}},
     )
     gui.ollama_var = FakeVar()
     gui.main_model_var = FakeVar()

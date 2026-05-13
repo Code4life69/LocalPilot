@@ -24,7 +24,7 @@ cd C:\LocalPilot
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-ollama pull qwen3:8b
+ollama pull gemma4:31b
 ollama pull qwen2.5-coder:14b-instruct-q3_K_M
 ollama pull qwen2.5-coder:7b
 ollama pull qwen2.5vl:7b
@@ -95,7 +95,7 @@ model compare gemma4
 
 ## Required Ollama Models
 
-- Main reasoning / chat role: `qwen3:8b`
+- Main reasoning / chat role: `gemma4:31b`
 - Coder role: `qwen2.5-coder:14b-instruct-q3_K_M`
 - Coder fallback: `qwen2.5-coder:7b`
 - Vision role: `qwen2.5vl:7b`
@@ -110,14 +110,14 @@ ollama pull qwen3:30b
 
 LocalPilot keeps reasoning/chat, coding, and visual analysis separate by default:
 
-- `qwen3:8b` handles default planning, chat, and everyday reasoning
+- `gemma4:31b` handles default planning, chat, and everyday reasoning on this machine
 - `qwen2.5-coder:14b-instruct-q3_K_M` handles coding and app generation
 - `qwen2.5-coder:7b` is the automatic coder fallback if the 14B coder model is missing
 - `qwen2.5vl:7b` is reserved for screenshots and visual inspection
 - `granite3.3:2b` is reserved for fast routing experiments
 - `nomic-embed-text` is reserved for future local memory search
 - `qwen3:30b` remains available as an optional slow high-quality mode and is not the default
-- `gemma4:e4b` is available as an optional fast multimodal/general comparison model
+- `gemma4:e4b` is available as an optional faster Gemma comparison model
 - `gemma4:latest` is available as an optional quality comparison model if it runs well on this machine
 
 LocalPilot expects a reachable Ollama API, typically at `http://127.0.0.1:11434`.

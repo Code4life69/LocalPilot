@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $models = @(
-    "qwen3:8b",
+    "gemma4:31b",
     "qwen2.5-coder:14b-instruct-q3_K_M",
     "qwen2.5-coder:7b",
     "qwen2.5vl:7b",

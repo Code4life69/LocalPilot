@@ -2,7 +2,7 @@
   "name": "LocalPilot",
   "purpose": "A local Windows AI assistant with explicit modes, local memory, safe tool use, and optional GUI visibility.",
   "model_roles": {
-    "main": "qwen3:8b",
+    "main": "gemma4:31b",
     "coder": "qwen2.5-coder:14b-instruct-q3_K_M",
     "coder_fallback": "qwen2.5-coder:7b",
     "vision": "qwen2.5vl:7b",

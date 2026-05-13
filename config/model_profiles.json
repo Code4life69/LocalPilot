@@ -5,10 +5,10 @@
   },
   "default_role": "main",
   "main": {
-    "model": "qwen3:8b",
+    "model": "gemma4:31b",
     "num_ctx": 4096,
     "temperature": 0.35,
-    "description": "Default fast reasoning and planning model"
+    "description": "User-selected maximum-quality local reasoning and planning model"
   },
   "coder": {
     "model": "qwen2.5-coder:14b-instruct-q3_K_M",

@@ -26,10 +26,10 @@ def load_optional_gemma_install_script() -> str:
     return Path("scripts/install_optional_gemma4.ps1").read_text(encoding="utf-8")
 
 
-def test_model_profiles_default_main_is_qwen3_8b():
+def test_model_profiles_default_main_is_gemma4_31b():
     profiles = load_model_profiles()
 
-    assert profiles["main"]["model"] == "qwen3:8b"
+    assert profiles["main"]["model"] == "gemma4:31b"
     assert profiles["main"]["model"] != "qwen3:30b"
 
 
@@ -86,7 +86,7 @@ def test_coder_role_falls_back_when_primary_missing():
 
     resolved = client.resolve_model_for_role(
         "coder",
-        available=["qwen2.5-coder:7b", "qwen3:8b"],
+        available=["qwen2.5-coder:7b", "gemma4:31b"],
     )
 
     assert resolved == "qwen2.5-coder:7b"
@@ -123,7 +123,7 @@ def test_model_status_report_handles_ollama_unavailable():
 
     assert "Model status" in report
     assert "- Ollama reachable: no" in report
-    assert "main: preferred=qwen3:8b" in report
+    assert "main: preferred=gemma4:31b" in report
 
 
 def test_model_status_report_marks_missing_models_without_crashing():
@@ -135,7 +135,7 @@ def test_model_status_report_marks_missing_models_without_crashing():
         default_role="main",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["qwen3:8b", "qwen2.5vl:7b"]
+    client.list_models = lambda: ["gemma4:31b", "qwen2.5vl:7b"]
 
     report = client.build_model_status_report(default_role="main")
 
@@ -188,17 +188,17 @@ def test_model_benchmark_report_warns_when_models_are_missing():
         default_role="main",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["qwen3:8b"]
+    client.list_models = lambda: ["gemma4:31b"]
     client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: (
         {
             "ok": True,
-            "model": "qwen3:8b",
+            "model": "gemma4:31b",
             "eval_count": 32,
             "eval_duration": 1_000_000_000,
             "load_duration": 250_000_000,
             "tokens_per_second": 32.0,
         }
-        if model_name == "qwen3:8b"
+        if model_name == "gemma4:31b"
         else {
             "ok": False,
             "error": f"Model missing: {model_name}",
@@ -208,7 +208,7 @@ def test_model_benchmark_report_warns_when_models_are_missing():
 
     report = client.build_model_benchmark_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
-    assert "main: model=qwen3:8b" in report
+    assert "main: model=gemma4:31b" in report
     assert "coder: warning -> Model missing: qwen2.5-coder:14b-instruct-q3_K_M" in report
     assert "router: warning -> Model missing: granite3.3:2b" in report
 
@@ -274,7 +274,7 @@ def test_model_benchmark_report_handles_vision_failure_gracefully(tmp_path):
         debug_views_dir=tmp_path / "debug_views",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["qwen3:8b", "qwen2.5-coder:14b-instruct-q3_K_M", "qwen2.5-coder:7b", "granite3.3:2b", "qwen2.5vl:7b"]
+    client.list_models = lambda: ["gemma4:31b", "qwen2.5-coder:14b-instruct-q3_K_M", "qwen2.5-coder:7b", "granite3.3:2b", "qwen2.5vl:7b"]
     client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: {
         "ok": True,
         "model": model_name,
@@ -327,7 +327,7 @@ def test_model_doctor_handles_ollama_unavailable():
 
     assert "Model doctor" in report
     assert "- Ollama reachable: no" in report
-    assert "ollama pull qwen3:8b" in report
+    assert "ollama pull gemma4:31b" in report
 
 
 def test_model_doctor_reports_missing_configured_models():
@@ -346,7 +346,7 @@ def test_model_doctor_reports_missing_configured_models():
     report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
     assert "- Missing configured models:" in report
-    assert "qwen3:8b" in report
+    assert "gemma4:31b" in report
     assert "possible temporary fallback available: llama3.1:8b" in report
 
 
@@ -385,7 +385,7 @@ def test_model_repair_plan_prints_pull_commands():
     report = client.build_model_repair_plan()
 
     assert "Model repair plan" in report
-    assert "ollama pull qwen3:8b" in report
+    assert "ollama pull gemma4:31b" in report
     assert "ollama pull qwen2.5-coder:14b-instruct-q3_K_M" in report
     assert "ollama pull qwen3:30b" in report
 
@@ -438,7 +438,7 @@ def test_model_compare_report_warns_when_gemma_fast_is_missing():
     )
     client.is_server_available = lambda: True
     client.list_models = lambda: [
-        "qwen3:8b",
+        "gemma4:31b",
         "qwen2.5-coder:14b-instruct-q3_K_M",
         "qwen2.5vl:7b",
         "granite3.3:2b",
@@ -463,7 +463,7 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
     )
     client.is_server_available = lambda: True
     client.list_models = lambda: [
-        "qwen3:8b",
+        "gemma4:31b",
         "qwen2.5-coder:14b-instruct-q3_K_M",
         "qwen2.5vl:7b",
         "granite3.3:2b",
@@ -483,7 +483,7 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
         "think_disabled": think is False,
         "text": (
             "Use GitHub issue verification, confirm the page, and refuse destructive requests."
-            if "gemma4" in model_name or model_name == "qwen3:8b"
+            if "gemma4" in model_name
             else "def add_numbers(a, b): return a + b"
         ),
     }
@@ -505,6 +505,8 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
 
     assert "- Planning comparison:" in report
     assert "appear equivalent on this machine" in report
+    assert "main planning" in report
+    assert "main safety" in report
     assert "gemma fast planning" in report
     assert "gemma quality planning" in report
     assert "qwen vision" in report

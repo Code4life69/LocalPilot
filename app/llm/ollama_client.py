@@ -278,7 +278,7 @@ class OllamaClient:
 
     def suggested_temporary_fallback(self, role: str, available: list[str]) -> str | None:
         fallback_map = {
-            "main": ["llama3.1:8b"],
+            "main": ["qwen3:8b", "llama3.1:8b"],
         }
         for candidate in fallback_map.get(role, []):
             match = self._find_installed_model_name(candidate, available)
@@ -1253,7 +1253,7 @@ class OllamaClient:
         vision_image = self.create_vision_test_image()
 
         planning_entries = [
-            ("qwen planning", self.model_profiles.get("main", {}).get("model", ""), planning_prompt, "main"),
+            ("main planning", self.model_profiles.get("main", {}).get("model", ""), planning_prompt, "main"),
             ("gemma fast planning", gemma_fast, planning_prompt, "gemma4_fast"),
         ]
         if gemma_quality:
@@ -1266,7 +1266,7 @@ class OllamaClient:
 
         lines.append("- Safety/tool instruction comparison:")
         safety_entries = [
-            ("qwen planning safety", self.model_profiles.get("main", {}).get("model", ""), safety_prompt, "main"),
+            ("main safety", self.model_profiles.get("main", {}).get("model", ""), safety_prompt, "main"),
             ("gemma fast safety", gemma_fast, safety_prompt, "gemma4_fast"),
         ]
         if gemma_quality:
