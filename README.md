@@ -27,7 +27,6 @@ pip install -r requirements.txt
 ollama pull gemma4:31b
 ollama pull qwen2.5-coder:14b-instruct-q3_K_M
 ollama pull qwen2.5-coder:7b
-ollama pull qwen2.5vl:7b
 ollama pull granite3.3:2b
 ollama pull nomic-embed-text
 python localpilot.py
@@ -98,7 +97,7 @@ model compare gemma4
 - Main reasoning / chat role: `gemma4:31b`
 - Coder role: `qwen2.5-coder:14b-instruct-q3_K_M`
 - Coder fallback: `qwen2.5-coder:7b`
-- Vision role: `qwen2.5vl:7b`
+- Vision role: `gemma4:31b`
 - Router role: `granite3.3:2b`
 - Embedding role: `nomic-embed-text`
 
@@ -108,12 +107,12 @@ Optional slow quality mode:
 ollama pull qwen3:30b
 ```
 
-LocalPilot keeps reasoning/chat, coding, and visual analysis separate by default:
+LocalPilot keeps coding and routing specialized by default, while this machine now uses `gemma4:31b` for both main reasoning and vision:
 
 - `gemma4:31b` handles default planning, chat, and everyday reasoning on this machine
 - `qwen2.5-coder:14b-instruct-q3_K_M` handles coding and app generation
 - `qwen2.5-coder:7b` is the automatic coder fallback if the 14B coder model is missing
-- `qwen2.5vl:7b` is reserved for screenshots and visual inspection
+- `gemma4:31b` is also used for screenshots and visual inspection
 - `granite3.3:2b` is reserved for fast routing experiments
 - `nomic-embed-text` is reserved for future local memory search
 - `qwen3:30b` remains available as an optional slow high-quality mode and is not the default
@@ -315,7 +314,7 @@ C:\LocalPilot
 - Richer GUI controls for approvals and history filtering
 - Stronger Windows UI Automation control actions
 - Better structured learned facts updates
-- Full multimodal Ollama verification for `qwen2.5vl:7b`
+- Keep multimodal verification strong for the configured vision role
 - Add stronger OCR backends later if Tesseract is not enough
 - Add Whisper.cpp later for voice input
 

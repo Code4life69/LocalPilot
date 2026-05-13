@@ -4,7 +4,6 @@ $models = @(
     "gemma4:31b",
     "qwen2.5-coder:14b-instruct-q3_K_M",
     "qwen2.5-coder:7b",
-    "qwen2.5vl:7b",
     "granite3.3:2b",
     "nomic-embed-text"
 )

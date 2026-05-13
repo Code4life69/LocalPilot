@@ -1288,14 +1288,14 @@ class OllamaClient:
             lines.extend(self._format_compare_entry(label, result, self._coding_quality_note(result.get("text", ""))))
 
         lines.append("- Screenshot understanding comparison:")
-        qwen_vision = self._run_vision_request(
+        default_vision = self._run_vision_request(
             prompt=vision_prompt,
             image_path=vision_image,
-            request_mode="compare_qwen_vision",
+            request_mode="compare_default_vision",
             num_predict=32,
             max_width=512,
         )
-        lines.extend(self._format_vision_compare_entry("qwen vision", qwen_vision))
+        lines.extend(self._format_vision_compare_entry("default vision", default_vision))
 
         gemma_vision = self._run_vision_request(
             prompt=vision_prompt,
@@ -1308,7 +1308,7 @@ class OllamaClient:
         )
         lines.extend(self._format_vision_compare_entry("gemma fast vision", gemma_vision))
 
-        page_help_note = self._page_understanding_help_note(qwen_vision, gemma_vision)
+        page_help_note = self._page_understanding_help_note(default_vision, gemma_vision)
         lines.append(f"- Page understanding note: {page_help_note}")
         if gemma_quality:
             lines.append(f"- Optional quality comparison model available: {gemma_quality}")
@@ -1494,6 +1494,7 @@ class OllamaClient:
 
         lines.append("- Configured roles:")
         missing_models: list[str] = []
+        seen_missing_models: set[str] = set()
         for role in self.ROLE_NAMES:
             profile = self.model_profiles.get(role)
             if not profile:
@@ -1514,7 +1515,9 @@ class OllamaClient:
             lines.append(detail)
 
             if not exact and preferred:
-                missing_models.append(preferred)
+                if preferred not in seen_missing_models:
+                    missing_models.append(preferred)
+                    seen_missing_models.add(preferred)
                 similar = self.find_similar_installed_models(preferred, available)
                 if similar:
                     lines.append(f"    similar installed models: {', '.join(similar)}")
@@ -1537,11 +1540,13 @@ class OllamaClient:
 
     def recommended_repair_commands(self, available: list[str]) -> list[str]:
         commands: list[str] = []
+        seen_models: set[str] = set()
         for role in self.REQUIRED_RECOMMENDED_ROLES:
             profile = self.model_profiles.get(role, {})
             model_name = profile.get("model")
-            if not model_name:
+            if not model_name or model_name in seen_models:
                 continue
+            seen_models.add(model_name)
             status = "already installed" if self._find_installed_model_name(model_name, available) else "missing"
             commands.append(f"ollama pull {model_name}  # {status}")
         quality_model = self.model_profiles.get("quality_slow", {}).get("model")

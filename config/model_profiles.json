@@ -24,10 +24,10 @@
     "description": "Fallback coding model when the main coder model is unavailable"
   },
   "vision": {
-    "model": "qwen2.5vl:7b",
+    "model": "gemma4:31b",
     "num_ctx": 4096,
     "temperature": 0.1,
-    "description": "Screenshot and image understanding"
+    "description": "User-selected maximum-quality screenshot and image understanding model on this machine"
   },
   "router": {
     "model": "granite3.3:2b",

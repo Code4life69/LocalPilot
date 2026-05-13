@@ -5,7 +5,7 @@
     "main": "gemma4:31b",
     "coder": "qwen2.5-coder:14b-instruct-q3_K_M",
     "coder_fallback": "qwen2.5-coder:7b",
-    "vision": "qwen2.5vl:7b",
+    "vision": "gemma4:31b",
     "router": "granite3.3:2b",
     "embedding": "nomic-embed-text",
     "quality_slow": "qwen3:30b",
@@ -67,10 +67,10 @@
     "Keyword routing is intentionally simple.",
     "Vision support may require Ollama multimodal API tuning.",
     "Desktop automation prefers inspection over direct manipulation.",
-    "Reasoning/chat and visual analysis intentionally use separate models."
+    "Reasoning/chat, coding, and visual analysis are role-configurable."
   ],
   "todo": [
-    "Verify end-to-end qwen2.5vl multimodal behavior with the installed Ollama build.",
+    "Keep end-to-end multimodal behavior verified for the configured vision role.",
     "Improve natural-language parsing for tool intents.",
     "Expand GUI controls without adding background autonomy.",
     "Add PaddleOCR later for screen text extraction.",

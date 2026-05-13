@@ -135,7 +135,7 @@ def test_model_status_report_marks_missing_models_without_crashing():
         default_role="main",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b", "qwen2.5vl:7b"]
+    client.list_models = lambda: ["gemma4:31b"]
 
     report = client.build_model_status_report(default_role="main")
 
@@ -274,7 +274,7 @@ def test_model_benchmark_report_handles_vision_failure_gracefully(tmp_path):
         debug_views_dir=tmp_path / "debug_views",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b", "qwen2.5-coder:14b-instruct-q3_K_M", "qwen2.5-coder:7b", "granite3.3:2b", "qwen2.5vl:7b"]
+    client.list_models = lambda: ["gemma4:31b", "qwen2.5-coder:14b-instruct-q3_K_M", "qwen2.5-coder:7b", "granite3.3:2b"]
     client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: {
         "ok": True,
         "model": model_name,
@@ -440,7 +440,6 @@ def test_model_compare_report_warns_when_gemma_fast_is_missing():
     client.list_models = lambda: [
         "gemma4:31b",
         "qwen2.5-coder:14b-instruct-q3_K_M",
-        "qwen2.5vl:7b",
         "granite3.3:2b",
     ]
 
@@ -465,7 +464,6 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
     client.list_models = lambda: [
         "gemma4:31b",
         "qwen2.5-coder:14b-instruct-q3_K_M",
-        "qwen2.5vl:7b",
         "granite3.3:2b",
         "gemma4:e4b",
         "gemma4:latest",
@@ -489,7 +487,7 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
     }
     client._run_vision_request = lambda **kwargs: {
         "ok": True,
-        "model": kwargs.get("model_name_override") or "qwen2.5vl:7b",
+        "model": kwargs.get("model_name_override") or "gemma4:31b",
         "text": "The screen shows a GitHub issue page with a button and visible text.",
         "eval_count": 18,
         "eval_duration": 1_000_000_000,
@@ -509,7 +507,7 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
     assert "main safety" in report
     assert "gemma fast planning" in report
     assert "gemma quality planning" in report
-    assert "qwen vision" in report
+    assert "default vision" in report
     assert "gemma fast vision" in report
     assert "Page understanding note:" in report
     assert "think:false used=yes" in report
