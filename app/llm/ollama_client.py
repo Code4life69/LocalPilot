@@ -632,8 +632,9 @@ class OllamaClient:
             return {"ok": False, "error": f"Vision unavailable: model `{preferred}` is not installed.\nRun: ollama pull {preferred}"}
         effective_think = think
         effective_num_predict = num_predict
-        if effective_think is None and self._model_family(model_name) == "gemma4":
-            effective_num_predict = max(num_predict, 256)
+        gemma_thinking_mode = effective_think is None and self._model_family(model_name) == "gemma4"
+        if gemma_thinking_mode:
+            effective_num_predict = max(num_predict, 352)
 
         preprocessing = self.preprocess_vision_image(image_file, request_mode=request_mode, max_width=max_width)
         processed_path = Path(preprocessing["processed_path"])
@@ -724,6 +725,68 @@ class OllamaClient:
                             "eval_duration": int(data.get("eval_duration") or 0),
                             "load_duration": int(data.get("load_duration") or 0),
                         }
+                    if gemma_thinking_mode and attempt_mode == "chat_messages_with_images" and done_reason == "length":
+                        retry_payload = dict(payload)
+                        retry_options = dict(payload.get("options", {}))
+                        retry_options["num_predict"] = max(int(retry_options.get("num_predict") or 0), 512)
+                        retry_payload["options"] = retry_options
+                        retry_response = requests.post(
+                            endpoint,
+                            json=retry_payload,
+                            timeout=self.timeout_seconds,
+                        )
+                        if retry_response.ok:
+                            retry_data = retry_response.json()
+                            retry_text = self._extract_vision_text(retry_data)
+                            retry_thinking_text = self._extract_thinking_text(retry_data)
+                            retry_visible_answer_length = len(retry_text)
+                            retry_thinking_length = len(retry_thinking_text)
+                            retry_done_reason = str(retry_data.get("done_reason") or "")
+                            if retry_text:
+                                self._log_event(
+                                    "Vision",
+                                    "Vision request succeeded via chat_messages_with_images_retry",
+                                    endpoint=endpoint,
+                                    model=model_name,
+                                    image_path=str(processed_path),
+                                    request_mode="chat_messages_with_images_retry",
+                                )
+                                return {
+                                    "ok": True,
+                                    "model": model_name,
+                                    "endpoint": endpoint,
+                                    "request_mode": "chat_messages_with_images_retry",
+                                    "image_path": str(processed_path),
+                                    "image_size": preprocessing["processed_size"],
+                                    "preprocessing": preprocessing,
+                                    "text": retry_text,
+                                    "visible_answer_length": retry_visible_answer_length,
+                                    "thinking_length": retry_thinking_length,
+                                    "done_reason": retry_done_reason,
+                                    "think_disabled": think is False,
+                                    "response": retry_data,
+                                    "eval_count": int(retry_data.get("eval_count") or 0),
+                                    "eval_duration": int(retry_data.get("eval_duration") or 0),
+                                    "load_duration": int(retry_data.get("load_duration") or 0),
+                                }
+                            last_diagnostic = {
+                                "endpoint": endpoint,
+                                "model": model_name,
+                                "image_path": str(processed_path),
+                                "image_size": preprocessing["processed_size"],
+                                "request_mode": "chat_messages_with_images_retry",
+                                "response_status": retry_response.status_code,
+                                "response_body": retry_response.text[:400],
+                                "think_disabled": think is False,
+                                "visible_answer_length": retry_visible_answer_length,
+                                "thinking_length": retry_thinking_length,
+                                "done_reason": retry_done_reason,
+                                "exception": self._build_empty_text_diagnostic_message(
+                                    visible_answer_length=retry_visible_answer_length,
+                                    thinking_length=retry_thinking_length,
+                                ),
+                            }
+                            continue
                     last_diagnostic = {
                         "endpoint": endpoint,
                         "model": model_name,

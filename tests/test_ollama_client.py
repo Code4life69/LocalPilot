@@ -612,7 +612,77 @@ def test_default_gemma_vision_role_keeps_thinking_and_boosts_budget(tmp_path, mo
     assert result["ok"] is True
     assert captured_payloads
     assert "think" not in captured_payloads[0]
-    assert captured_payloads[0]["options"]["num_predict"] == 256
+    assert captured_payloads[0]["options"]["num_predict"] == 352
+
+
+def test_default_gemma_vision_role_retries_with_larger_budget_when_visible_text_is_empty(tmp_path, monkeypatch):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    image_path = tmp_path / "vision_input.png"
+    Image.new("RGB", (64, 64), (20, 30, 40)).save(image_path)
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["gemma4:31b"]
+
+    captured_payloads = []
+
+    class FakeResponse:
+        def __init__(self, data):
+            self.status_code = 200
+            self.ok = True
+            self._data = data
+            self.text = '{"ok":true}'
+
+        def json(self):
+            return self._data
+
+    responses = [
+        FakeResponse(
+            {
+                "message": {"content": "", "thinking": "draft answer"},
+                "done_reason": "length",
+                "eval_count": 352,
+                "eval_duration": 1_000_000_000,
+                "load_duration": 100_000_000,
+            }
+        ),
+        FakeResponse(
+            {
+                "message": {"content": "The image shows colored shapes on a dark background."},
+                "done_reason": "stop",
+                "eval_count": 40,
+                "eval_duration": 1_000_000_000,
+                "load_duration": 100_000_000,
+            }
+        ),
+    ]
+
+    def fake_post(url, json=None, timeout=None):
+        captured_payloads.append(json)
+        return responses.pop(0)
+
+    monkeypatch.setattr("app.llm.ollama_client.requests.post", fake_post)
+
+    result = client._run_vision_request(
+        prompt="Describe this image.",
+        image_path=image_path,
+        request_mode="unit_test_default_gemma_retry",
+    )
+
+    assert result["ok"] is True
+    assert result["request_mode"] == "chat_messages_with_images_retry"
+    assert len(captured_payloads) == 2
+    assert captured_payloads[0]["options"]["num_predict"] == 352
+    assert captured_payloads[1]["options"]["num_predict"] == 512
+    assert "think" not in captured_payloads[0]
+    assert "think" not in captured_payloads[1]
 
 
 def test_empty_visible_content_with_thinking_is_reported_clearly(tmp_path, monkeypatch):
