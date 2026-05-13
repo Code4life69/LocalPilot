@@ -547,6 +547,17 @@ class OllamaClient:
             return response_text.strip()
         return ""
 
+    def _extract_thinking_text(self, data: dict[str, Any]) -> str:
+        message = data.get("message")
+        if isinstance(message, dict):
+            thinking = message.get("thinking", "")
+            if isinstance(thinking, str):
+                return thinking.strip()
+        thinking_text = data.get("thinking", "")
+        if isinstance(thinking_text, str):
+            return thinking_text.strip()
+        return ""
+
     def _format_vision_diagnostic(self, diagnostic: dict[str, Any]) -> str:
         lines = [
             "Vision unavailable: request failed.",
@@ -556,6 +567,14 @@ class OllamaClient:
             f"- image size: {diagnostic.get('image_size', 'n/a')}",
             f"- request mode: {diagnostic.get('request_mode', 'n/a')}",
         ]
+        if diagnostic.get("think_disabled") is not None:
+            lines.append(f"- think:false used: {'yes' if diagnostic.get('think_disabled') else 'no'}")
+        if diagnostic.get("visible_answer_length") is not None:
+            lines.append(f"- visible answer length: {diagnostic.get('visible_answer_length')}")
+        if diagnostic.get("thinking_length") is not None:
+            lines.append(f"- thinking length: {diagnostic.get('thinking_length')}")
+        if diagnostic.get("done_reason"):
+            lines.append(f"- done reason: {diagnostic.get('done_reason')}")
         if diagnostic.get("response_status") is not None:
             lines.append(f"- response status: {diagnostic.get('response_status')}")
         if diagnostic.get("response_body"):
@@ -572,6 +591,7 @@ class OllamaClient:
         num_predict: int = 64,
         max_width: int = 1280,
         model_name_override: str | None = None,
+        think: bool | None = None,
     ) -> dict[str, Any]:
         image_file = Path(image_path)
         if not image_file.exists():
@@ -583,6 +603,10 @@ class OllamaClient:
                 "request_mode": request_mode,
                 "response_status": None,
                 "response_body": "",
+                "think_disabled": think is False,
+                "visible_answer_length": 0,
+                "thinking_length": 0,
+                "done_reason": "",
                 "exception": f"Image not found: {image_file}",
             }
             return {"ok": False, "diagnostic": diagnostic, "error": self._format_vision_diagnostic(diagnostic)}
@@ -649,6 +673,9 @@ class OllamaClient:
         if vision_profile.get("keep_alive"):
             for _, payload, _ in attempts:
                 payload["keep_alive"] = vision_profile["keep_alive"]
+        if think is not None:
+            for _, payload, _ in attempts:
+                payload["think"] = think
 
         last_diagnostic: dict[str, Any] | None = None
         for endpoint, payload, attempt_mode in attempts:
@@ -661,6 +688,10 @@ class OllamaClient:
                 if response.ok:
                     data = response.json()
                     text = self._extract_vision_text(data)
+                    thinking_text = self._extract_thinking_text(data)
+                    visible_answer_length = len(text)
+                    thinking_length = len(thinking_text)
+                    done_reason = str(data.get("done_reason") or "")
                     self.last_heavy_role_used = "vision"
                     if text:
                         self._log_event(
@@ -680,6 +711,10 @@ class OllamaClient:
                             "image_size": preprocessing["processed_size"],
                             "preprocessing": preprocessing,
                             "text": text,
+                            "visible_answer_length": visible_answer_length,
+                            "thinking_length": thinking_length,
+                            "done_reason": done_reason,
+                            "think_disabled": think is False,
                             "response": data,
                             "eval_count": int(data.get("eval_count") or 0),
                             "eval_duration": int(data.get("eval_duration") or 0),
@@ -693,7 +728,16 @@ class OllamaClient:
                         "request_mode": attempt_mode,
                         "response_status": response.status_code,
                         "response_body": response.text[:400],
-                        "exception": "Vision call returned no text.",
+                        "think_disabled": think is False,
+                        "visible_answer_length": visible_answer_length,
+                        "thinking_length": thinking_length,
+                        "done_reason": done_reason,
+                        "exception": self._build_empty_text_diagnostic_message(
+                            visible_answer_length=visible_answer_length,
+                            thinking_length=thinking_length,
+                            done_reason=done_reason,
+                            think_disabled=think is False,
+                        ),
                     }
                 else:
                     last_diagnostic = {
@@ -704,6 +748,10 @@ class OllamaClient:
                         "request_mode": attempt_mode,
                         "response_status": response.status_code,
                         "response_body": response.text[:400],
+                        "think_disabled": think is False,
+                        "visible_answer_length": None,
+                        "thinking_length": None,
+                        "done_reason": "",
                         "exception": "",
                     }
             except Exception as exc:
@@ -716,6 +764,10 @@ class OllamaClient:
                     "request_mode": attempt_mode,
                     "response_status": getattr(response, "status_code", None),
                     "response_body": (getattr(response, "text", "") or "")[:400],
+                    "think_disabled": think is False,
+                    "visible_answer_length": None,
+                    "thinking_length": None,
+                    "done_reason": "",
                     "exception": str(exc),
                 }
 
@@ -727,10 +779,27 @@ class OllamaClient:
             "request_mode": request_mode,
             "response_status": None,
             "response_body": "",
+            "think_disabled": think is False,
+            "visible_answer_length": None,
+            "thinking_length": None,
+            "done_reason": "",
             "exception": "Unknown vision failure.",
         }
         self._log_event("Vision", "Vision request failed", **diagnostic)
         return {"ok": False, "diagnostic": diagnostic, "error": self._format_vision_diagnostic(diagnostic)}
+
+    def _build_empty_text_diagnostic_message(
+        self,
+        visible_answer_length: int,
+        thinking_length: int,
+        done_reason: str,
+        think_disabled: bool,
+    ) -> str:
+        if visible_answer_length == 0 and thinking_length > 0:
+            if think_disabled:
+                return "Vision call returned no visible text even though thinking was disabled."
+            return "Vision call returned no visible text but did return internal thinking. Consider using think:false for this probe."
+        return "Vision call returned no visible text."
 
     def _known_localpilot_model_names(self, available: list[str]) -> set[str]:
         names: set[str] = set()
@@ -998,6 +1067,7 @@ class OllamaClient:
         num_ctx: int = 4096,
         temperature: float = 0.2,
         images: list[str] | None = None,
+        think: bool | None = None,
     ) -> dict[str, Any]:
         if not self.is_server_available():
             return {"ok": False, "error": self.build_unavailable_message(auto_start_attempted=False), "model": model_name}
@@ -1021,6 +1091,8 @@ class OllamaClient:
             payload["keep_alive"] = keep_alive
         if images:
             payload["images"] = images
+        if think is not None:
+            payload["think"] = think
 
         try:
             response = requests.post(
@@ -1030,6 +1102,8 @@ class OllamaClient:
             )
             response.raise_for_status()
             data = response.json()
+            text = str(data.get("response", "")).strip()
+            thinking_text = self._extract_thinking_text(data)
             eval_count = int(data.get("eval_count") or 0)
             eval_duration = int(data.get("eval_duration") or 0)
             load_duration = int(data.get("load_duration") or 0)
@@ -1039,7 +1113,11 @@ class OllamaClient:
             return {
                 "ok": True,
                 "model": installed_name,
-                "text": str(data.get("response", "")).strip(),
+                "text": text,
+                "visible_answer_length": len(text),
+                "thinking_length": len(thinking_text),
+                "done_reason": str(data.get("done_reason") or ""),
+                "think_disabled": think is False,
                 "prompt_eval_count": int(data.get("prompt_eval_count") or 0),
                 "eval_count": eval_count,
                 "eval_duration": eval_duration,
@@ -1156,6 +1234,9 @@ class OllamaClient:
         if not gemma_fast:
             lines.append("- gemma4:e4b is not installed. Run: powershell -ExecutionPolicy Bypass -File scripts/install_optional_gemma4.ps1")
             return "\n".join(lines)
+        gemma_equivalence = self._gemma_equivalence_note(gemma_fast, gemma_quality)
+        if gemma_equivalence:
+            lines.append(f"- {gemma_equivalence}")
 
         planning_prompt = (
             "You are planning a guarded desktop assistant task. "
@@ -1223,6 +1304,7 @@ class OllamaClient:
             num_predict=32,
             max_width=512,
             model_name_override=gemma_fast,
+            think=False,
         )
         lines.extend(self._format_vision_compare_entry("gemma fast vision", gemma_vision))
 
@@ -1237,11 +1319,13 @@ class OllamaClient:
     def _compare_text_model(self, model_name: str, prompt: str, role_hint: str | None = None) -> dict[str, Any]:
         if role_hint and self.is_heavy_role(role_hint):
             self._prepare_role_activation(role_hint)
+        think = False if self._model_family(model_name) == "gemma4" else None
         result = self.benchmark_model(
             model_name=model_name,
             prompt=prompt,
             num_ctx=4096,
             temperature=0.2,
+            think=think,
         )
         return result
 
@@ -1253,6 +1337,7 @@ class OllamaClient:
         answer = self._clip_text(result.get("text", ""))
         return [
             f"  - {label}: model={result.get('model')}, load={load_seconds:.2f}s, tps={f'{tps:.2f}' if tps is not None else 'n/a'}",
+            f"    diagnostics: visible_answer_length={result.get('visible_answer_length', 0)}, thinking_length={result.get('thinking_length', 0)}, done_reason={result.get('done_reason', 'n/a')}, think:false used={'yes' if result.get('think_disabled') else 'no'}",
             f"    quality: {note}",
             f"    answer: {answer}",
         ]
@@ -1267,6 +1352,7 @@ class OllamaClient:
         answer = self._clip_text(result.get("text", ""))
         return [
             f"  - {label}: model={result.get('model')}, load={load_seconds:.2f}s, tps={f'{tps:.2f}' if tps is not None else 'n/a'}",
+            f"    diagnostics: visible_answer_length={result.get('visible_answer_length', 0)}, thinking_length={result.get('thinking_length', 0)}, done_reason={result.get('done_reason', 'n/a')}, think:false used={'yes' if result.get('think_disabled') else 'no'}",
             f"    helped page understanding: {self._vision_page_help_note(result)}",
             f"    answer: {answer}",
         ]
@@ -1320,6 +1406,44 @@ class OllamaClient:
         if qwen_help == "yes":
             return "Gemma did not beat the default vision path on the probe image"
         return "Gemma did not provide a stronger page-understanding signal on the probe image"
+
+    def _get_model_metadata(self, model_name: str) -> dict[str, str]:
+        try:
+            result = subprocess.run(
+                ["ollama", "show", model_name],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            return {}
+        if result.returncode != 0:
+            return {}
+        metadata: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("architecture"):
+                metadata["architecture"] = stripped.split()[-1]
+            elif stripped.startswith("parameters"):
+                metadata["parameters"] = stripped.split()[-1]
+            elif stripped.startswith("quantization"):
+                metadata["quantization"] = stripped.split()[-1]
+        return metadata
+
+    def _gemma_equivalence_note(self, gemma_fast: str | None, gemma_quality: str | None) -> str:
+        if not gemma_fast or not gemma_quality:
+            return ""
+        fast_metadata = self._get_model_metadata(gemma_fast)
+        quality_metadata = self._get_model_metadata(gemma_quality)
+        if not fast_metadata or not quality_metadata:
+            return ""
+        relevant_keys = ("architecture", "parameters", "quantization")
+        if all(fast_metadata.get(key) and fast_metadata.get(key) == quality_metadata.get(key) for key in relevant_keys):
+            return f"{gemma_fast} and {gemma_quality} appear equivalent on this machine."
+        return ""
 
     def _clip_text(self, text: str, limit: int = 180) -> str:
         if not text:

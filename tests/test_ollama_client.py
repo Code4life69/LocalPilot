@@ -470,13 +470,17 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
         "gemma4:e4b",
         "gemma4:latest",
     ]
-    client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: {
+    client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None, think=None: {
         "ok": True,
         "model": model_name,
         "eval_count": 24,
         "eval_duration": 1_000_000_000,
         "load_duration": 200_000_000,
         "tokens_per_second": 24.0,
+        "visible_answer_length": 64,
+        "thinking_length": 0,
+        "done_reason": "stop",
+        "think_disabled": think is False,
         "text": (
             "Use GitHub issue verification, confirm the page, and refuse destructive requests."
             if "gemma4" in model_name or model_name == "qwen3:8b"
@@ -490,16 +494,145 @@ def test_model_compare_report_includes_gemma_sections_when_available(tmp_path):
         "eval_count": 18,
         "eval_duration": 1_000_000_000,
         "load_duration": 150_000_000,
+        "visible_answer_length": 72,
+        "thinking_length": 0,
+        "done_reason": "stop",
+        "think_disabled": kwargs.get("think") is False,
     }
+    client._gemma_equivalence_note = lambda fast, quality: f"{fast} and {quality} appear equivalent on this machine."
 
     report = client.build_model_compare_report("gemma4")
 
     assert "- Planning comparison:" in report
+    assert "appear equivalent on this machine" in report
     assert "gemma fast planning" in report
     assert "gemma quality planning" in report
     assert "qwen vision" in report
     assert "gemma fast vision" in report
     assert "Page understanding note:" in report
+    assert "think:false used=yes" in report
+
+
+def test_gemma_vision_request_includes_think_false(tmp_path, monkeypatch):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    image_path = tmp_path / "vision_input.png"
+    Image.new("RGB", (64, 64), (20, 30, 40)).save(image_path)
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["gemma4:e4b"]
+
+    captured_payloads = []
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        text = '{"ok":true}'
+
+        def json(self):
+            return {
+                "message": {"content": "A simple image with no text."},
+                "done_reason": "stop",
+                "eval_count": 12,
+                "eval_duration": 1_000_000_000,
+                "load_duration": 100_000_000,
+            }
+
+    def fake_post(url, json=None, timeout=None):
+        captured_payloads.append(json)
+        return FakeResponse()
+
+    monkeypatch.setattr("app.llm.ollama_client.requests.post", fake_post)
+
+    result = client._run_vision_request(
+        prompt="Describe this image.",
+        image_path=image_path,
+        request_mode="unit_test_gemma",
+        model_name_override="gemma4:e4b",
+        think=False,
+    )
+
+    assert result["ok"] is True
+    assert captured_payloads
+    assert captured_payloads[0]["think"] is False
+    assert result["think_disabled"] is True
+
+
+def test_empty_visible_content_with_thinking_is_reported_clearly(tmp_path, monkeypatch):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    image_path = tmp_path / "vision_input.png"
+    Image.new("RGB", (64, 64), (20, 30, 40)).save(image_path)
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client.is_server_available = lambda: True
+    client.list_models = lambda: ["gemma4:e4b"]
+
+    class FakeResponse:
+        status_code = 200
+        ok = True
+        text = '{"ok":true}'
+
+        def json(self):
+            return {
+                "message": {
+                    "content": "",
+                    "thinking": "Thinking Process: image analysis...",
+                },
+                "done_reason": "length",
+                "eval_count": 64,
+                "eval_duration": 1_000_000_000,
+                "load_duration": 100_000_000,
+            }
+
+    monkeypatch.setattr("app.llm.ollama_client.requests.post", lambda *args, **kwargs: FakeResponse())
+
+    result = client._run_vision_request(
+        prompt="Describe this image.",
+        image_path=image_path,
+        request_mode="unit_test_gemma_failure",
+        model_name_override="gemma4:e4b",
+    )
+
+    assert result["ok"] is False
+    assert "did return internal thinking" in result["error"]
+    assert "- thinking length:" in result["error"]
+    assert "- done reason: length" in result["error"]
+
+
+def test_equivalent_gemma_model_tags_are_reported_when_metadata_matches(tmp_path):
+    profiles = load_model_profiles()
+    settings = load_settings()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+        lifecycle_settings=settings["model_lifecycle"],
+        debug_views_dir=tmp_path / "debug_views",
+    )
+    client._get_model_metadata = lambda model_name: {
+        "architecture": "gemma4",
+        "parameters": "8.0B",
+        "quantization": "Q4_K_M",
+    }
+
+    note = client._gemma_equivalence_note("gemma4:e4b", "gemma4:latest")
+
+    assert "appear equivalent on this machine" in note
 
 
 def test_prepare_role_activation_unloads_previous_heavy_role_when_enabled():
