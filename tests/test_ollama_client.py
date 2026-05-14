@@ -30,24 +30,24 @@ def load_optional_gemma_install_script() -> str:
     return Path("scripts/install_optional_gemma4.ps1").read_text(encoding="utf-8")
 
 
-def test_model_profiles_default_main_is_gemma4_31b():
+def test_model_profiles_default_main_is_gemma4_e4b():
     profiles = load_model_profiles()
 
-    assert profiles["main"]["model"] == "gemma4:31b"
+    assert profiles["main"]["model"] == "gemma4:e4b"
     assert profiles["main"]["model"] != "qwen3:30b"
 
 
 def test_model_profiles_keep_quality_slow_role():
     profiles = load_model_profiles()
 
-    assert profiles["quality_slow"]["model"] == "qwen3:30b"
+    assert profiles["quality_slow"]["model"] == "gemma4:e4b"
 
 
 def test_model_profiles_include_optional_gemma4_comparison_roles():
     profiles = load_model_profiles()
 
     assert profiles["gemma4_fast"]["model"] == "gemma4:e4b"
-    assert profiles["gemma4_quality"]["model"] == "gemma4:latest"
+    assert profiles["gemma4_quality"]["model"] == "gemma4:e4b"
 
 
 def test_performance_profiles_default_is_rtx3060_balanced():
@@ -61,7 +61,7 @@ def test_operating_profiles_default_is_reliable_stack():
     profiles = load_operating_profiles()
 
     assert profiles["default_profile"] == "reliable_stack"
-    assert profiles["profiles"]["quality_max"]["role_overrides"]["main"]["model"] == "qwen3-vl:30b"
+    assert profiles["profiles"]["quality_max"]["role_overrides"]["main"]["model"] == "gemma4:e4b"
 
 
 def test_lifecycle_config_loads_with_expected_heavy_roles():
@@ -86,7 +86,7 @@ def test_professional_build_config_defaults_are_present():
     assert settings["professional_build"]["launch_timeout_seconds"] == 8
 
 
-def test_coder_role_falls_back_when_primary_missing():
+def test_coder_role_resolves_to_gemma4_e4b():
     profiles = load_model_profiles()
     client = OllamaClient(
         host="http://127.0.0.1:11434",
@@ -97,10 +97,10 @@ def test_coder_role_falls_back_when_primary_missing():
 
     resolved = client.resolve_model_for_role(
         "coder",
-        available=["qwen2.5-coder:7b", "gemma4:31b"],
+        available=["gemma4:e4b"],
     )
 
-    assert resolved == "qwen2.5-coder:7b"
+    assert resolved == "gemma4:e4b"
 
 
 def test_role_overrides_change_runtime_profile():
@@ -147,7 +147,7 @@ def test_model_status_report_handles_ollama_unavailable():
 
     assert "Model status" in report
     assert "- Ollama reachable: no" in report
-    assert "main: preferred=gemma4:31b" in report
+    assert "main: preferred=gemma4:e4b" in report
 
 
 def test_model_status_report_marks_missing_models_without_crashing():
@@ -164,7 +164,7 @@ def test_model_status_report_marks_missing_models_without_crashing():
     report = client.build_model_status_report(default_role="main")
 
     assert "- Ollama reachable: yes" in report
-    assert "coder: preferred=qwen2.5-coder:14b-instruct-q3_K_M [missing]" in report
+    assert "coder: preferred=gemma4:e4b [missing]" in report
     assert "router: preferred=granite3.3:2b [missing]" in report
 
 
@@ -232,7 +232,9 @@ def test_model_benchmark_report_warns_when_models_are_missing():
 
     report = client.build_model_benchmark_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
-    assert "main: model=gemma4:31b" in report
+    assert "main: warning -> Model missing: gemma4:e4b" in report
+assert "coder: warning -> Model missing: gemma4:e4b" in report
+assert "router: warning -> Model missing: gemma4:e4b" in report
     assert "coder: warning -> Model missing: qwen2.5-coder:14b-instruct-q3_K_M" in report
     assert "router: warning -> Model missing: granite3.3:2b" in report
 
@@ -368,7 +370,7 @@ def test_model_doctor_handles_ollama_unavailable():
 
     assert "Model doctor" in report
     assert "- Ollama reachable: no" in report
-    assert "ollama pull gemma4:31b" in report
+    assert "ollama pull gemma4:e4b" in report
 
 
 def test_model_doctor_reports_missing_configured_models():
@@ -387,7 +389,7 @@ def test_model_doctor_reports_missing_configured_models():
     report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
     assert "- Missing configured models:" in report
-    assert "gemma4:31b" in report
+    assert "gemma4:e4b" in report
     assert "possible temporary fallback available: llama3.1:8b" in report
 
 
@@ -620,7 +622,7 @@ def test_default_gemma_vision_role_keeps_thinking_and_boosts_budget(tmp_path, mo
         debug_views_dir=tmp_path / "debug_views",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b"]
+    client.list_models = lambda: ["nomic-embed-text:latest"]
 
     captured_payloads = []
 
