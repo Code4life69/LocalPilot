@@ -1,3 +1,11 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from app.modes.chat_mode import ChatMode
+
+
 def test_dev_status_command_reports_status(tmp_path):
     # With task_state present
     class DummyTaskState:
@@ -42,10 +50,6 @@ def test_dev_status_command_reports_status(tmp_path):
     result = mode.handle({"user_text": "dev status"})
     assert result["ok"]
     assert "task_state exists: no" in result["message"]
-from pathlib import Path
-from types import SimpleNamespace
-
-from app.modes.chat_mode import ChatMode
 
 
 def test_trust_checklist_command_reads_gauntlet_doc(tmp_path):
@@ -382,3 +386,35 @@ def test_chat_mode_strips_emoji_when_user_did_not_use_any(tmp_path):
     result = mode.handle({"user_text": "How are you doing?"})
 
     assert result["message"] == "I'm doing well!"
+
+
+def test_dev_status_command_edge_cases(tmp_path):
+    # Test when task_state exists but some fields are missing
+    class DummyTaskStatePartial:
+        def snapshot(self):
+            return {
+                "operating_profile": "reliable_stack",
+                "current_goal": None,
+                "last_test_status": "passed",
+                "last_test_summary": None
+            }
+        def update(self, **kwargs):
+            return self.snapshot()
+
+    class DummyAppPartial:
+        def __init__(self):
+            self.root_dir = tmp_path
+            self.capabilities = {"name": "LocalPilot", "modes": ["chat"]}
+            self.task_state = DummyTaskStatePartial()
+        def resolve_runtime_model_for_role(self, role):
+            return None
+
+    mode = ChatMode(DummyAppPartial())
+    result = mode.handle({"user_text": "dev status"})
+    assert result["ok"]
+    assert "Active operating profile: reliable_stack" in result["message"]
+    assert "Active main model: (unknown)" in result["message"]
+    assert "task_state exists: yes" in result["message"]
+    assert "current_goal: (none)" in result["message"]
+    assert "last_test_status: passed" in result["message"]
+    assert "last_test_summary: (none)" in result["message"]
