@@ -46,3 +46,30 @@ class AppLogger:
             except Exception:
                 continue
         return entry
+
+    def tail_events(self, limit: int = 80) -> list[dict[str, Any]]:
+        if not self._jsonl_path.exists():
+            return []
+        lines = self._jsonl_path.read_text(encoding="utf-8").splitlines()
+        events: list[dict[str, Any]] = []
+        for line in lines[-max(limit, 1):]:
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict):
+                    events.append(data)
+            except Exception:
+                continue
+        return events
+
+    def format_event_tail(self, limit: int = 80) -> str:
+        events = self.tail_events(limit=limit)
+        if not events:
+            return "No log events recorded yet."
+        lines: list[str] = []
+        for entry in events:
+            line = f"[{entry.get('timestamp', '')}] {entry.get('role', '')}: {entry.get('message', '')}"
+            extra = entry.get("extra") or {}
+            if extra:
+                line += f" | {json.dumps(extra, ensure_ascii=True)}"
+            lines.append(line)
+        return "\n".join(lines)

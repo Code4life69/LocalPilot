@@ -27,11 +27,17 @@ DEFAULT_TASK_STATE: dict[str, Any] = {
 
 
 class TaskStateStore:
-    def __init__(self, path: str | Path, safety_constraints: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        safety_constraints: dict[str, Any] | None = None,
+        event_callback=None,
+    ) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._state = deepcopy(DEFAULT_TASK_STATE)
         self._state["safety_constraints"] = dict(safety_constraints or {})
+        self._event_callback = event_callback
         self._load_or_initialize()
 
     def _load_or_initialize(self) -> None:
@@ -47,6 +53,14 @@ class TaskStateStore:
     def _persist(self) -> None:
         self.path.write_text(json.dumps(self._state, indent=2, ensure_ascii=True), encoding="utf-8")
 
+    def _emit(self, action: str, **extra: Any) -> None:
+        if self._event_callback is None:
+            return
+        try:
+            self._event_callback("TaskState", action, **extra)
+        except Exception:
+            return
+
     def snapshot(self) -> dict[str, Any]:
         return deepcopy(self._state)
 
@@ -55,6 +69,7 @@ class TaskStateStore:
             if value is not None:
                 self._state[key] = value
         self._persist()
+        self._emit("update", fields=list(fields.keys()))
         return self.snapshot()
 
     def reset_for_new_goal(self, goal: str, active_mode: str, active_model: str) -> dict[str, Any]:
@@ -67,6 +82,7 @@ class TaskStateStore:
         self._state["active_mode"] = active_mode
         self._state["active_model"] = active_model
         self._persist()
+        self._emit("reset", current_goal=goal, active_mode=active_mode, active_model=active_model)
         return self.snapshot()
 
     def merge_nested(self, key: str, values: dict[str, Any]) -> dict[str, Any]:
@@ -76,4 +92,5 @@ class TaskStateStore:
         current.update(values)
         self._state[key] = current
         self._persist()
+        self._emit("merge", key=key, fields=list(values.keys()))
         return self.snapshot()

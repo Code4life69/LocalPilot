@@ -24,3 +24,19 @@ def test_task_state_store_updates_fields(tmp_path):
     assert snapshot["current_goal"] == "build app"
     assert snapshot["active_mode"] == "code"
     assert snapshot["files_changed"] == ["main.py"]
+
+
+def test_task_state_store_emits_update_events(tmp_path):
+    events = []
+    store = TaskStateStore(
+        tmp_path / "workspace" / "runtime" / "task_state.json",
+        event_callback=lambda role, message, **extra: events.append((role, message, extra)),
+    )
+
+    store.update(current_goal="inspect logs")
+    store.merge_nested("page_state", {"title": "Example"})
+    store.reset_for_new_goal("build app", "code", "qwen3:8b")
+
+    assert ("TaskState", "update", {"fields": ["current_goal"]}) in events
+    assert ("TaskState", "merge", {"key": "page_state", "fields": ["title"]}) in events
+    assert ("TaskState", "reset", {"current_goal": "build app", "active_mode": "code", "active_model": "qwen3:8b"}) in events

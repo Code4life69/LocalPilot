@@ -247,6 +247,24 @@ def test_system_doctor_command_returns_status_text(tmp_path):
     assert "System doctor" in result["message"]
 
 
+def test_log_tail_command_returns_logger_tail(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_log_tail=lambda: "tail output",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "log tail"})
+
+    assert result["ok"]
+    assert result["message"] == "tail output"
+
+
 def test_chat_mode_uses_main_role_for_llm_calls(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)

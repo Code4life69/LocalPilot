@@ -90,6 +90,32 @@ def test_broad_destructive_request_routes_through_safety_refusal():
     assert events == [("Safety", "Destructive request blocked", {"user_text": r"delete everything in C:\LocalPilot\workspace"})]
 
 
+def test_process_user_input_logs_request_summary():
+    events = []
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.pending_followup = None
+    app.safety = SimpleNamespace(is_broad_destructive_request=lambda text: False)
+    app.router = SimpleNamespace(classify=lambda text: "chat")
+    app.modes = {"chat": SimpleNamespace(handle=lambda request: {"ok": True, "message": "done"})}
+    app.logger = SimpleNamespace(event=lambda role, message, **extra: events.append((role, message, extra)))
+    app.task_state = SimpleNamespace(update=lambda **kwargs: kwargs)
+    app._active_operating_profile_name = lambda: "reliable_stack"
+    app.resolve_runtime_model_for_role = lambda role: "qwen3:8b"
+    app._role_for_mode = lambda mode: "main"
+    app._update_task_state_after_result = lambda request, result: None
+    app._safety_state_for_result = lambda mode, result: "idle"
+    app._result_status_for_logging = lambda result: "ok"
+
+    request = app.process_user_input("hello")
+
+    assert request["result"]["message"] == "done"
+    request_events = [event for event in events if event[0] == "Request"]
+    assert request_events[0][1] == "started"
+    assert request_events[0][2]["classified_mode"] == "chat"
+    assert request_events[1][1] == "completed"
+    assert request_events[1][2]["final_result_status"] == "ok"
+
+
 def test_main_model_status_flag_prints_without_gui(monkeypatch):
     calls = {"shutdown": False, "output": []}
 

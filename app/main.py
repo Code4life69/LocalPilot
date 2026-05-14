@@ -10,6 +10,7 @@ import threading
 import tkinter as tk
 import atexit
 import time
+import uuid
 from pathlib import Path
 from tkinter import scrolledtext, ttk
 from typing import Any
@@ -61,6 +62,7 @@ class LocalPilotApp:
         self.task_state = TaskStateStore(
             self.root_dir / "workspace" / "runtime" / "task_state.json",
             safety_constraints=self._build_task_state_safety_constraints(),
+            event_callback=self.logger.event,
         )
         self._apply_operating_profile(self._active_operating_profile_name())
         self._initialize_ollama()
@@ -238,6 +240,9 @@ class LocalPilotApp:
             ollama_reachable=self.ollama.is_server_available(),
         )
 
+    def describe_log_tail(self) -> str:
+        return self.logger.format_event_tail(limit=80)
+
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
         if followup_request is not None:
@@ -258,6 +263,7 @@ class LocalPilotApp:
             }
 
         request: dict[str, Any] = {
+            "request_id": uuid.uuid4().hex[:12],
             "user_text": user_text,
             "mode": self.router.classify(user_text),
             "requires_confirmation": False,
@@ -269,14 +275,34 @@ class LocalPilotApp:
         request["events"].append({"role": "Router", "message": f"classified as {request['mode']}"})
         self.logger.event("Reasoner", f"dispatching mode {request['mode']}")
         self.logger.event(f"Mode:{request['mode']}", "activated")
+        active_role = self._role_for_mode(request["mode"])
+        active_model = self.resolve_runtime_model_for_role(active_role)
+        task_state_loaded = hasattr(self, "task_state")
         if hasattr(self, "task_state"):
             self.task_state.update(
                 current_goal=user_text,
                 active_mode=request["mode"],
-                active_model=self.resolve_runtime_model_for_role(self._role_for_mode(request["mode"])),
+                active_model=active_model,
                 last_action=f"dispatch:{request['mode']}",
                 next_recommended_action=f"Handle request in {request['mode']} mode.",
             )
+        self.logger.event(
+            "Request",
+            "started",
+            request_id=request["request_id"],
+            user_text=user_text,
+            classified_mode=request["mode"],
+            operating_profile=self._active_operating_profile_name(),
+            active_model_role=active_role,
+            active_model=active_model,
+            task_state_loaded=task_state_loaded,
+            task_state_updated=task_state_loaded,
+            current_goal=user_text,
+            objective_verified=None,
+            confidence_score=None,
+            safety_state="guarded" if request["mode"] == "desktop" else "idle",
+            final_result_status="started",
+        )
 
         if request["mode"] == "memory":
             result = self._handle_memory_request(request)
@@ -286,6 +312,23 @@ class LocalPilotApp:
         request["result"] = result
         if hasattr(self, "task_state"):
             self._update_task_state_after_result(request, result)
+        self.logger.event(
+            "Request",
+            "completed",
+            request_id=request["request_id"],
+            user_text=user_text,
+            classified_mode=request["mode"],
+            operating_profile=self._active_operating_profile_name(),
+            active_model_role=active_role,
+            active_model=active_model,
+            task_state_loaded=task_state_loaded,
+            task_state_updated=hasattr(self, "task_state"),
+            current_goal=user_text,
+            objective_verified=result.get("objective_verified"),
+            confidence_score=result.get("confidence_score"),
+            safety_state=self._safety_state_for_result(request["mode"], result),
+            final_result_status=self._result_status_for_logging(result),
+        )
         return request
 
     def _role_for_mode(self, mode: str) -> str:
@@ -360,6 +403,20 @@ class LocalPilotApp:
         if mode == "desktop":
             return "Stop, inspect the current page state, and ask for clarification if the target is uncertain."
         return "Review the last failure before taking another action."
+
+    def _result_status_for_logging(self, result: dict[str, Any]) -> str:
+        if "status" in result:
+            return str(result.get("status"))
+        if "result" in result:
+            return str(result.get("result"))
+        return "ok" if result.get("ok") else "error"
+
+    def _safety_state_for_result(self, mode: str, result: dict[str, Any]) -> str:
+        if mode == "safety":
+            return "blocked"
+        if mode == "desktop":
+            return "guarded"
+        return "idle"
 
     def set_pending_followup(self, mode: str, prompt: str, callback) -> None:
         self.pending_followup = {

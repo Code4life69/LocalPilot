@@ -37,6 +37,11 @@ class ChatMode:
                 "ok": True,
                 "message": self._load_trust_checklist(),
             }
+        if lowered == "log tail":
+            return {
+                "ok": True,
+                "message": self.app.describe_log_tail(),
+            }
         if lowered == "model status":
             return {
                 "ok": True,
