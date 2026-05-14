@@ -70,6 +70,13 @@ class CodeMode:
     def handle(self, request: dict) -> dict:
         text = request["user_text"].strip()
         lowered = text.lower()
+        if hasattr(self.app, "task_state"):
+            self.app.task_state.snapshot()
+            self.app.task_state.update(
+                active_mode="code",
+                active_model=self.app.resolve_runtime_model_for_role("coder") if hasattr(self.app, "resolve_runtime_model_for_role") else "",
+                last_action="code:handle",
+            )
         self.app.logger.event("Mode:code", f"Handling code request: {text}")
 
         if self._is_professional_build_request(lowered):
@@ -312,6 +319,23 @@ class CodeMode:
 
         research = self._request_professional_research(build_request, settings) if settings["allow_web_research"] else None
         brief = self._build_project_brief(build_request, app_kind, project_path)
+        if hasattr(self.app, "task_state"):
+            self.app.task_state.update(
+                current_plan=[
+                    "inspect project request",
+                    "generate scaffold",
+                    "run verification",
+                    "self-review",
+                    "improve if needed",
+                ],
+                build_state={
+                    "project_path": str(project_path),
+                    "status": "building",
+                    "project_kind": app_kind,
+                },
+                research_state=research or {},
+                next_recommended_action="Generate the first version and run verification.",
+            )
         website_spec = self._generate_website_spec(build_request) if app_kind == "website" else None
         professional_context = {
             "brief": brief,
@@ -424,6 +448,7 @@ class CodeMode:
             "message": report,
             "project_path": str(project_path),
             "files": list(files_to_write.keys()),
+            "tests_run": final_verification.get("checks_performed", []),
             "brief": brief,
             "acceptance_checklist": final_checklist,
             "verification": final_verification,

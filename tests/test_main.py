@@ -205,6 +205,27 @@ def test_main_doctor_alias_prints_without_gui(monkeypatch):
     assert calls["output"] == ["System doctor\n- OCR backend: unavailable"]
 
 
+def test_main_task_state_flag_prints_without_gui(monkeypatch):
+    calls = {"shutdown": False, "output": []}
+
+    class FakeApp:
+        def __init__(self, root_dir):
+            self.root_dir = root_dir
+            self.task_state = SimpleNamespace(snapshot=lambda: {"current_goal": "demo", "active_mode": "code"})
+
+        def shutdown(self):
+            calls["shutdown"] = True
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", FakeApp)
+    monkeypatch.setattr(main_module, "safe_console_print", lambda text="": calls["output"].append(text))
+
+    exit_code = main_module.main(["--task-state"])
+
+    assert exit_code == 0
+    assert calls["shutdown"] is True
+    assert '"current_goal": "demo"' in calls["output"][0]
+
+
 def test_approval_callback_logs_pending_and_acceptance():
     events = []
     app = LocalPilotApp.__new__(LocalPilotApp)

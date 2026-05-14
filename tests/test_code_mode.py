@@ -24,6 +24,14 @@ class DummyApp:
         self.root_dir = Path(root_dir)
         self.logger = DummyLogger()
         self.safety = DummySafety()
+        self.task_state = type(
+            "TaskStateStub",
+            (),
+            {
+                "snapshot": lambda self: {},
+                "update": lambda self, **kwargs: kwargs,
+            },
+        )()
         self.settings = {
             "professional_build": {
                 "enabled": True,
@@ -46,6 +54,9 @@ class DummyApp:
 
     def ask_approval(self, prompt):
         return True
+
+    def resolve_runtime_model_for_role(self, role):
+        return {"main": "qwen3:8b", "coder": "qwen2.5-coder:14b-instruct-q3_K_M"}.get(role, "")
 
 
 def test_notepad_request_without_explicit_folder_creates_default_project(tmp_path):

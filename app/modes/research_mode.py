@@ -11,6 +11,13 @@ class ResearchMode:
 
     def handle(self, request: dict) -> dict:
         text = request["user_text"].strip()
+        if hasattr(self.app, "task_state"):
+            self.app.task_state.snapshot()
+            self.app.task_state.update(
+                active_mode="research",
+                active_model=self.app.resolve_runtime_model_for_role("main") if hasattr(self.app, "resolve_runtime_model_for_role") else "",
+                last_action="research:handle",
+            )
         save_requested = self._should_save_note(text)
         query = self._normalize_query_for_search(self._extract_query(text))
         if not query:

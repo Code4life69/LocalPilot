@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import tkinter as tk
@@ -25,6 +26,7 @@ from app.modes.research_mode import ResearchMode
 from app.router import KeywordRouter
 from app.safety import SafetyManager
 from app.system_doctor import build_system_doctor_report
+from app.task_state import TaskStateStore
 from app.tools.desktop_lessons import DesktopLessonStore
 
 
@@ -34,6 +36,7 @@ class LocalPilotApp:
         self.settings = self._load_json(self.root_dir / "config" / "settings.json")
         self.model_profiles = self._load_json(self.root_dir / "config" / "model_profiles.json")
         self.performance_profiles = self._load_json(self.root_dir / "config" / "performance_profiles.json")
+        self.operating_profiles = self._load_json(self.root_dir / "config" / "operating_profiles.json")
         self.logger = AppLogger(self.root_dir / self.settings["logs_dir"])
         self.git_sync = GitSyncManager(self.root_dir, self.settings, self.logger)
         self.memory = MemoryStore(
@@ -55,6 +58,11 @@ class LocalPilotApp:
             debug_views_dir=self.root_dir / "workspace" / "debug_views",
             log_event_callback=self.logger.event,
         )
+        self.task_state = TaskStateStore(
+            self.root_dir / "workspace" / "runtime" / "task_state.json",
+            safety_constraints=self._build_task_state_safety_constraints(),
+        )
+        self._apply_operating_profile(self._active_operating_profile_name())
         self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
         self.gui: LocalPilotGUI | None = None
@@ -82,9 +90,65 @@ class LocalPilotApp:
             self.performance_profiles.get("default_profile", "rtx3060_balanced"),
         )
 
+    def _active_operating_profile_name(self) -> str:
+        return self.task_state.snapshot().get(
+            "operating_profile",
+            self.settings.get("active_operating_profile", self.operating_profiles.get("default_profile", "reliable_stack")),
+        )
+
+    def _selected_operating_profile(self) -> dict[str, Any]:
+        name = self._active_operating_profile_name()
+        return dict(self.operating_profiles.get("profiles", {}).get(name, {}))
+
     def _selected_performance_profile(self) -> dict[str, Any]:
         profile_name = self._active_performance_profile_name()
         return dict(self.performance_profiles.get("profiles", {}).get(profile_name, {}))
+
+    def _build_task_state_safety_constraints(self) -> dict[str, Any]:
+        return {
+            "desktop_requires_confirmation": bool(self.settings.get("approvals", {}).get("desktop_requires_confirmation", True)),
+            "shell_requires_confirmation": bool(self.settings.get("approvals", {}).get("shell_requires_confirmation", True)),
+            "overwrite_requires_confirmation": bool(self.settings.get("approvals", {}).get("overwrite_requires_confirmation", True)),
+            "page_confidence_threshold": float(self.settings.get("page_understanding", {}).get("confidence_threshold", 0.85)),
+            "auto_submit_allowed": False,
+        }
+
+    def _apply_operating_profile(self, profile_name: str) -> None:
+        profile = dict(self.operating_profiles.get("profiles", {}).get(profile_name, {}))
+        self.ollama.set_role_overrides(profile.get("role_overrides", {}))
+        self.task_state.update(
+            operating_profile=profile_name,
+            active_model=self.resolve_runtime_model_for_role("main"),
+            safety_constraints=self._build_task_state_safety_constraints(),
+        )
+
+    def switch_operating_profile(self, profile_name: str) -> dict[str, Any]:
+        normalized = re.sub(r"[^a-z0-9]+", "_", profile_name.strip().lower()).strip("_")
+        profiles = self.operating_profiles.get("profiles", {})
+        if normalized not in profiles:
+            return {
+                "ok": False,
+                "error": (
+                    f"Unknown operating profile: {profile_name}. "
+                    f"Available: {', '.join(sorted(profiles))}"
+                ),
+            }
+        self._apply_operating_profile(normalized)
+        profile = profiles[normalized]
+        self.logger.event("OperatingMode", f"switched to {normalized}")
+        return {
+            "ok": True,
+            "message": (
+                f"Operating profile set to {normalized}.\n"
+                f"{profile.get('description', '')}".strip()
+            ),
+            "profile": normalized,
+            "role_overrides": profile.get("role_overrides", {}),
+        }
+
+    def resolve_runtime_model_for_role(self, role: str) -> str:
+        profile = self.ollama.get_profile(role)
+        return str(profile.get("model", ""))
 
     def _initialize_ollama(self) -> None:
         ollama_settings = self.settings.get("ollama", {})
@@ -130,6 +194,7 @@ class LocalPilotApp:
         return self.ollama.build_model_status_report(
             default_role=default_role,
             performance_profile_name=self._active_performance_profile_name(),
+            operating_profile_name=self._active_operating_profile_name(),
         )
 
     def describe_model_benchmark(self) -> str:
@@ -137,9 +202,15 @@ class LocalPilotApp:
         return self.ollama.build_model_benchmark_report(
             default_role=default_role,
             performance_profile_name=self._active_performance_profile_name(),
+            operating_profile_name=self._active_operating_profile_name(),
         )
 
     def describe_model_compare(self, target: str) -> str:
+        if target.strip().lower() == "operating-modes":
+            return self.ollama.build_operating_modes_compare_report(
+                operating_profiles=self.operating_profiles,
+                active_profile_name=self._active_operating_profile_name(),
+            )
         return self.ollama.build_model_compare_report(target)
 
     def describe_model_doctor(self) -> str:
@@ -198,6 +269,14 @@ class LocalPilotApp:
         request["events"].append({"role": "Router", "message": f"classified as {request['mode']}"})
         self.logger.event("Reasoner", f"dispatching mode {request['mode']}")
         self.logger.event(f"Mode:{request['mode']}", "activated")
+        if hasattr(self, "task_state"):
+            self.task_state.update(
+                current_goal=user_text,
+                active_mode=request["mode"],
+                active_model=self.resolve_runtime_model_for_role(self._role_for_mode(request["mode"])),
+                last_action=f"dispatch:{request['mode']}",
+                next_recommended_action=f"Handle request in {request['mode']} mode.",
+            )
 
         if request["mode"] == "memory":
             result = self._handle_memory_request(request)
@@ -205,7 +284,82 @@ class LocalPilotApp:
             handler = self.modes.get(request["mode"], self.modes["chat"])
             result = handler.handle(request)
         request["result"] = result
+        if hasattr(self, "task_state"):
+            self._update_task_state_after_result(request, result)
         return request
+
+    def _role_for_mode(self, mode: str) -> str:
+        mapping = {
+            "chat": "main",
+            "code": "coder",
+            "research": "main",
+            "desktop": "main",
+            "memory": "main",
+            "safety": "main",
+        }
+        return mapping.get(mode, "main")
+
+    def _update_task_state_after_result(self, request: dict[str, Any], result: dict[str, Any]) -> None:
+        mode = request.get("mode", "chat")
+        updates: dict[str, Any] = {
+            "active_mode": mode,
+            "active_model": self.resolve_runtime_model_for_role(self._role_for_mode(mode)),
+            "last_action": f"completed:{mode}" if result.get("ok") else f"failed:{mode}",
+            "last_failure": "" if result.get("ok") else result.get("error", "Unknown failure"),
+            "confidence_score": result.get("confidence_score"),
+            "next_recommended_action": self._next_action_from_result(mode, result),
+        }
+        if "page_state" in result:
+            updates["page_state"] = result.get("page_state", {})
+        elif any(key in result for key in ("active_window", "focused_control", "visible_controls", "mouse_position")):
+            updates["page_state"] = {
+                "active_window": result.get("active_window", {}),
+                "focused_control": result.get("focused_control", {}),
+                "visible_controls": result.get("visible_controls", {}),
+                "mouse_position": result.get("mouse_position", {}),
+                "ocr": result.get("ocr", {}),
+            }
+        if "objective_state" in result:
+            updates["objective_state"] = result.get("objective_state", {})
+        elif any(key in result for key in ("objective_match_confidence", "objective_verified", "reason")):
+            updates["objective_state"] = {
+                "objective_match_confidence": result.get("objective_match_confidence"),
+                "objective_verified": result.get("objective_verified"),
+                "reason": result.get("reason", ""),
+            }
+        if any(key in result for key in ("project_path", "verification", "acceptance_checklist", "status")):
+            updates["build_state"] = {
+                "project_path": result.get("project_path", ""),
+                "status": result.get("status", "unknown"),
+                "verification": result.get("verification", {}),
+                "acceptance_checklist": result.get("acceptance_checklist", []),
+            }
+        if any(key in result for key in ("query", "results", "note_saved")):
+            updates["research_state"] = {
+                "query": result.get("query", ""),
+                "result_count": len(result.get("results", []) or []),
+                "note_saved": bool(result.get("note_saved", False)),
+            }
+        files_changed = result.get("files") or result.get("files_changed") or []
+        if files_changed:
+            updates["files_changed"] = files_changed
+        tests_run = result.get("tests_run") or []
+        if tests_run:
+            updates["tests_run"] = tests_run
+        self.task_state.update(**updates)
+
+    def _next_action_from_result(self, mode: str, result: dict[str, Any]) -> str:
+        if result.get("ok"):
+            if mode == "code" and result.get("project_path"):
+                return "Review the generated project and run any remaining manual checks."
+            if mode == "desktop" and not result.get("objective_verified", True):
+                return "Inspect the page state and retry only with higher confidence."
+            return "Wait for the next user instruction."
+        if mode == "code":
+            return "Inspect verification failures, apply a fix, and rerun checks."
+        if mode == "desktop":
+            return "Stop, inspect the current page state, and ask for clarification if the target is uncertain."
+        return "Review the last failure before taking another action."
 
     def set_pending_followup(self, mode: str, prompt: str, callback) -> None:
         self.pending_followup = {
@@ -275,6 +429,8 @@ class LocalPilotApp:
         text = request["user_text"].strip()
         lowered = text.lower()
         self.logger.event("Memory", f"Handling memory request: {text}")
+        if hasattr(self, "task_state"):
+            self.task_state.snapshot()
 
         if lowered.startswith("save note") or lowered.startswith("remember"):
             note_text = text.split(" ", 2)[-1] if " " in text else ""
@@ -1014,6 +1170,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Alias for --system-doctor.",
     )
+    parser.add_argument(
+        "--task-state",
+        action="store_true",
+        help="Print the current shared runtime task state and exit.",
+    )
     return parser
 
 
@@ -1040,6 +1201,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.system_doctor or args.doctor:
         safe_console_print(app.describe_system_doctor())
+        app.shutdown()
+        return 0
+
+    if args.task_state:
+        safe_console_print(json.dumps(app.task_state.snapshot(), indent=2))
         app.shutdown()
         return 0
 

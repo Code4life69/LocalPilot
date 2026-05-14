@@ -20,6 +20,13 @@ class DesktopMode:
     def handle(self, request: dict) -> dict:
         text = request["user_text"].strip()
         lowered = text.lower()
+        if hasattr(self.app, "task_state"):
+            self.app.task_state.snapshot()
+            self.app.task_state.update(
+                active_mode="desktop",
+                active_model=self.app.resolve_runtime_model_for_role("main") if hasattr(self.app, "resolve_runtime_model_for_role") else "",
+                last_action="desktop:handle",
+            )
 
         flow_result = self.execution_flow.execute(text) if self.execution_flow.can_handle(text) else None
         if flow_result is not None:

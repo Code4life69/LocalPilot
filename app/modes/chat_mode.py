@@ -11,6 +11,13 @@ class ChatMode:
     def handle(self, request: dict) -> dict:
         text = request["user_text"].strip()
         lowered = text.lower()
+        if hasattr(self.app, "task_state"):
+            self.app.task_state.snapshot()
+            self.app.task_state.update(
+                active_mode="chat",
+                active_model=self.app.resolve_runtime_model_for_role("main") if hasattr(self.app, "resolve_runtime_model_for_role") else "",
+                last_action="chat:handle",
+            )
         if lowered in {"help", "/help"}:
             caps = self.app.capabilities
             return {
@@ -45,6 +52,13 @@ class ChatMode:
                 "ok": True,
                 "message": self.app.describe_model_compare("gemma4"),
             }
+        if lowered == "model compare operating-modes":
+            return {
+                "ok": True,
+                "message": self.app.describe_model_compare("operating-modes"),
+            }
+        if lowered.startswith("mode use "):
+            return self.app.switch_operating_profile(text.split(" ", 2)[-1])
         if lowered == "model doctor":
             return {
                 "ok": True,

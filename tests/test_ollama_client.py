@@ -18,6 +18,10 @@ def load_settings() -> dict:
     return json.loads(Path("config/settings.json").read_text(encoding="utf-8"))
 
 
+def load_operating_profiles() -> dict:
+    return json.loads(Path("config/operating_profiles.json").read_text(encoding="utf-8"))
+
+
 def load_install_script() -> str:
     return Path("scripts/install_recommended_models.ps1").read_text(encoding="utf-8")
 
@@ -51,6 +55,13 @@ def test_performance_profiles_default_is_rtx3060_balanced():
 
     assert profiles["default_profile"] == "rtx3060_balanced"
     assert profiles["profiles"]["rtx3060_balanced"]["num_ctx_main"] == 4096
+
+
+def test_operating_profiles_default_is_reliable_stack():
+    profiles = load_operating_profiles()
+
+    assert profiles["default_profile"] == "reliable_stack"
+    assert profiles["profiles"]["quality_max"]["role_overrides"]["main"]["model"] == "qwen3-vl:30b"
 
 
 def test_lifecycle_config_loads_with_expected_heavy_roles():
@@ -90,6 +101,19 @@ def test_coder_role_falls_back_when_primary_missing():
     )
 
     assert resolved == "qwen2.5-coder:7b"
+
+
+def test_role_overrides_change_runtime_profile():
+    profiles = load_model_profiles()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+    )
+    client.set_role_overrides({"main": {"model": "qwen3:8b"}})
+
+    assert client.get_profile("main")["model"] == "qwen3:8b"
 
 
 def test_tagless_model_name_resolves_latest_variant():
@@ -211,6 +235,23 @@ def test_model_benchmark_report_warns_when_models_are_missing():
     assert "main: model=gemma4:31b" in report
     assert "coder: warning -> Model missing: qwen2.5-coder:14b-instruct-q3_K_M" in report
     assert "router: warning -> Model missing: granite3.3:2b" in report
+
+
+def test_operating_mode_compare_report_handles_ollama_unavailable():
+    profiles = load_model_profiles()
+    operating_profiles = load_operating_profiles()
+    client = OllamaClient(
+        host="http://127.0.0.1:11434",
+        timeout_seconds=30,
+        model_profiles=profiles,
+        default_role="main",
+    )
+    client.is_server_available = lambda: False
+
+    report = client.build_operating_modes_compare_report(operating_profiles, "reliable_stack")
+
+    assert "Model compare: operating-modes" in report
+    assert "Ollama is unavailable" in report
 
 
 def test_preprocess_vision_image_creates_smaller_rgb_image(tmp_path):

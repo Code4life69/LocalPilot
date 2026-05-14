@@ -74,6 +74,42 @@ def test_model_compare_gemma4_command_returns_status_text(tmp_path):
     assert "Model compare: gemma4" in result["message"]
 
 
+def test_model_compare_operating_modes_command_returns_status_text(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        describe_model_compare=lambda target: f"Model compare: {target}",
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "model compare operating-modes"})
+
+    assert result["ok"]
+    assert "Model compare: operating-modes" in result["message"]
+
+
+def test_mode_use_quality_max_calls_profile_switch(tmp_path):
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir(parents=True)
+    app = SimpleNamespace(
+        root_dir=tmp_path,
+        capabilities={"name": "LocalPilot", "modes": ["chat"]},
+        switch_operating_profile=lambda name: {"ok": True, "message": f"switched:{name}"},
+        ollama=SimpleNamespace(chat_with_role=lambda *args, **kwargs: "unused"),
+        system_prompt="system",
+    )
+    mode = ChatMode(app)
+
+    result = mode.handle({"user_text": "mode use quality_max"})
+
+    assert result["ok"]
+    assert result["message"] == "switched:quality_max"
+
+
 def test_model_unload_command_returns_status_text(tmp_path):
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir(parents=True)

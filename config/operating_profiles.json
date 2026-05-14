@@ -1,0 +1,104 @@
+{
+  "default_profile": "reliable_stack",
+  "profiles": {
+    "reliable_stack": {
+      "description": "Specialized reliable local stack with a coding specialist and dedicated vision model.",
+      "role_overrides": {
+        "main": {
+          "model": "qwen3:8b",
+          "num_ctx": 4096,
+          "temperature": 0.35
+        },
+        "coder": {
+          "model": "qwen2.5-coder:14b-instruct-q3_K_M",
+          "fallback_model": "qwen2.5-coder:7b",
+          "num_ctx": 4096,
+          "temperature": 0.2
+        },
+        "vision": {
+          "model": "qwen2.5vl:7b",
+          "num_ctx": 4096,
+          "temperature": 0.1
+        },
+        "router": {
+          "model": "granite3.3:2b",
+          "num_ctx": 2048,
+          "temperature": 0
+        },
+        "embedding": {
+          "model": "nomic-embed-text"
+        }
+      },
+      "ocr_backend": "Tesseract"
+    },
+    "quality_max": {
+      "description": "Best-results-first operating mode with large multimodal reasoning and heavyweight review.",
+      "role_overrides": {
+        "main": {
+          "model": "qwen3-vl:30b",
+          "num_ctx": 4096,
+          "temperature": 0.3
+        },
+        "coder": {
+          "model": "qwen2.5-coder:14b-instruct-q3_K_M",
+          "fallback_model": "qwen2.5-coder:7b",
+          "num_ctx": 4096,
+          "temperature": 0.2
+        },
+        "heavy_reviewer": {
+          "model": "gemma4:31b",
+          "num_ctx": 4096,
+          "temperature": 0.25
+        },
+        "vision": {
+          "model": "qwen3-vl:30b",
+          "num_ctx": 4096,
+          "temperature": 0.1
+        },
+        "vision_fallback": {
+          "model": "qwen2.5vl:7b",
+          "num_ctx": 4096,
+          "temperature": 0.1
+        },
+        "router": {
+          "model": "granite3.3:2b",
+          "num_ctx": 2048,
+          "temperature": 0
+        },
+        "embedding": {
+          "model": "nomic-embed-text"
+        }
+      },
+      "ocr_backend": "Tesseract"
+    },
+    "one_model_qwen3_vl_30b": {
+      "description": "Single-model experiment that routes main, coding, and vision through qwen3-vl:30b.",
+      "role_overrides": {
+        "main": {
+          "model": "qwen3-vl:30b",
+          "num_ctx": 4096,
+          "temperature": 0.3
+        },
+        "coder": {
+          "model": "qwen3-vl:30b",
+          "num_ctx": 4096,
+          "temperature": 0.2
+        },
+        "vision": {
+          "model": "qwen3-vl:30b",
+          "num_ctx": 4096,
+          "temperature": 0.1
+        },
+        "router": {
+          "model": "granite3.3:2b",
+          "num_ctx": 2048,
+          "temperature": 0
+        },
+        "embedding": {
+          "model": "nomic-embed-text"
+        }
+      },
+      "ocr_backend": "Tesseract"
+    }
+  }
+}
