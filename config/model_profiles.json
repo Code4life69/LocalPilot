@@ -5,68 +5,68 @@
   },
   "default_role": "main",
   "main": {
-    "model": "gemma4:31b",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.35,
-    "description": "User-selected maximum-quality local reasoning and planning model"
+    "description": "Temporary Gemma 4 E4B main chat, reasoning, and planning model"
   },
   "coder": {
-    "model": "qwen2.5-coder:14b-instruct-q3_K_M",
-    "fallback_model": "qwen2.5-coder:7b",
+    "model": "gemma4:e4b",
+    "fallback_model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.2,
-    "description": "Coding, app generation, code repair, project editing"
+    "description": "Temporary Gemma 4 E4B coding role"
   },
   "coder_fallback": {
-    "model": "qwen2.5-coder:7b",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.2,
-    "description": "Fallback coding model when the main coder model is unavailable"
+    "description": "Temporary Gemma 4 E4B fallback coding role"
   },
   "vision": {
-    "model": "gemma4:31b",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.1,
-    "description": "User-selected maximum-quality screenshot and image understanding model on this machine"
+    "description": "Temporary Gemma 4 E4B screenshot and image understanding role"
   },
   "router": {
-    "model": "granite3.3:2b",
+    "model": "gemma4:e4b",
     "num_ctx": 2048,
     "temperature": 0,
-    "description": "Fast intent classification and routing"
+    "description": "Temporary Gemma 4 E4B intent routing role"
   },
   "embedding": {
     "model": "nomic-embed-text",
-    "description": "Local embeddings for future memory search"
+    "description": "Local embeddings for memory search. Kept separate because Gemma 4 E4B is not an embedding model."
   },
   "quality_slow": {
-    "model": "qwen3:30b",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.3,
-    "description": "Optional slow high-quality reasoning mode"
+    "description": "Temporary Gemma 4 E4B quality role"
   },
   "reasoning_slow": {
-    "model": "deepseek-r1:14b-qwen-distill-q4_K_M",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.25,
-    "description": "Optional slow reasoning cross-check"
+    "description": "Temporary Gemma 4 E4B reasoning cross-check role"
   },
   "general_fallback": {
-    "model": "llama3.1:8b",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.3,
-    "description": "Optional stable fallback general model"
+    "description": "Temporary Gemma 4 E4B general fallback role"
   },
   "gemma4_fast": {
     "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.2,
-    "description": "Optional fast Gemma 4 multimodal/general comparison model"
+    "description": "Gemma 4 E4B fast multimodal/general role"
   },
   "gemma4_quality": {
-    "model": "gemma4:latest",
+    "model": "gemma4:e4b",
     "num_ctx": 4096,
     "temperature": 0.25,
-    "description": "Optional higher-quality Gemma 4 comparison model if it runs well"
+    "description": "Temporary Gemma 4 E4B quality comparison role"
   }
 }

@@ -2,15 +2,15 @@
   "name": "LocalPilot",
   "purpose": "A local Windows AI assistant with explicit modes, local memory, safe tool use, and optional GUI visibility.",
   "model_roles": {
-    "main": "gemma4:31b",
-    "coder": "qwen2.5-coder:14b-instruct-q3_K_M",
-    "coder_fallback": "qwen2.5-coder:7b",
-    "vision": "gemma4:31b",
-    "router": "granite3.3:2b",
+    "main": "gemma4:e4b",
+    "coder": "gemma4:e4b",
+    "coder_fallback": "gemma4:e4b",
+    "vision": "gemma4:e4b",
+    "router": "gemma4:e4b",
     "embedding": "nomic-embed-text",
-    "quality_slow": "qwen3:30b",
-    "reasoning_slow": "deepseek-r1:14b-qwen-distill-q4_K_M",
-    "general_fallback": "llama3.1:8b"
+    "quality_slow": "gemma4:e4b",
+    "reasoning_slow": "gemma4:e4b",
+    "general_fallback": "gemma4:e4b"
   },
   "modes": [
     "chat",
@@ -67,7 +67,8 @@
     "Keyword routing is intentionally simple.",
     "Vision support may require Ollama multimodal API tuning.",
     "Desktop automation prefers inspection over direct manipulation.",
-    "Reasoning/chat, coding, and visual analysis are role-configurable."
+    "Reasoning/chat, coding, and visual analysis are role-configurable.",
+    "Temporary model policy: all LLM roles use gemma4:e4b except embeddings, which use nomic-embed-text."
   ],
   "todo": [
     "Keep end-to-end multimodal behavior verified for the configured vision role.",
