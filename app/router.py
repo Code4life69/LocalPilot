@@ -80,6 +80,8 @@ class KeywordRouter:
         lowered = text.lower().strip()
         if lowered.startswith("professional build ") or lowered.startswith("build this professionally"):
             return "code"
+        if lowered in {"run pytest", "run tests", "pytest", "test project", "verify project", "test localpilot", "verify localpilot", "cancel tests", "stop tests"}:
+            return "code"
         if self._looks_like_desktop_task_request(lowered):
             return "desktop"
         if self._looks_like_code_verification_request(lowered):

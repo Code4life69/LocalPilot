@@ -29,6 +29,7 @@ from app.safety import SafetyManager
 from app.system_doctor import build_system_doctor_report
 from app.task_state import TaskStateStore
 from app.tools.desktop_lessons import DesktopLessonStore
+from app.tools.test_runner import TestRunner
 
 
 class LocalPilotApp:
@@ -64,6 +65,7 @@ class LocalPilotApp:
             safety_constraints=self._build_task_state_safety_constraints(),
             event_callback=self.logger.event,
         )
+        self.test_runner = TestRunner(self)
         self._apply_operating_profile(self._active_operating_profile_name())
         self._initialize_ollama()
         self.safety = SafetyManager(approval_callback=self._approval_callback)
@@ -243,6 +245,12 @@ class LocalPilotApp:
     def describe_log_tail(self) -> str:
         return self.logger.format_event_tail(limit=80)
 
+    def start_project_tests(self) -> dict[str, Any]:
+        return self.test_runner.start()
+
+    def cancel_project_tests(self) -> dict[str, Any]:
+        return self.test_runner.cancel()
+
     def process_user_input(self, user_text: str) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
         if followup_request is not None:
@@ -409,6 +417,8 @@ class LocalPilotApp:
             return str(result.get("status"))
         if "result" in result:
             return str(result.get("result"))
+        if result.get("running"):
+            return "running"
         return "ok" if result.get("ok") else "error"
 
     def _safety_state_for_result(self, mode: str, result: dict[str, Any]) -> str:
@@ -416,6 +426,8 @@ class LocalPilotApp:
             return "blocked"
         if mode == "desktop":
             return "guarded"
+        if mode == "code" and self.test_runner.is_running():
+            return "running-tests"
         return "idle"
 
     def set_pending_followup(self, mode: str, prompt: str, callback) -> None:
@@ -574,6 +586,7 @@ class LocalPilotGUI:
         self.main_model_var = tk.StringVar(value="n/a")
         self.vision_model_var = tk.StringVar(value="n/a")
         self.safety_var = tk.StringVar(value="Guarded")
+        self.running_var = tk.StringVar(value="idle")
 
         status_items = [
             ("Mode", self.mode_var),
@@ -582,6 +595,7 @@ class LocalPilotGUI:
             ("Main", self.main_model_var),
             ("Vision", self.vision_model_var),
             ("Safety", self.safety_var),
+            ("Running", self.running_var),
         ]
         for index, (label, variable) in enumerate(status_items):
             item = ttk.Frame(header, style="Status.TFrame")
@@ -711,6 +725,8 @@ class LocalPilotGUI:
                 self.mode_var.set(role.replace("Mode:", "").strip())
             if role == "Safety":
                 self._update_safety_state(message)
+            if role == "Tests":
+                self._update_running_state(message, event.get("extra", {}))
             line = f"[{event['timestamp']}] {role} -> {message}\n"
             self._append_readonly(self.timeline, line)
             self._append_readonly(self.logs, line)
@@ -783,6 +799,8 @@ class LocalPilotGUI:
             ("Show Notes", lambda: self.submit_text("show notes")),
             ("Take Screenshot", lambda: self.submit_text("take screenshot")),
             ("Mouse Position", lambda: self.submit_text("get mouse position")),
+            ("Run Pytest", lambda: self.submit_text("run pytest")),
+            ("Cancel Tests", lambda: self.submit_text("cancel tests")),
             ("Open Last Debug Image", self.open_last_debug_image),
             ("Clear Chat", self.clear_chat),
         ]
@@ -812,6 +830,8 @@ class LocalPilotGUI:
         )
         if not self.safety_var.get():
             self.safety_var.set("Guarded")
+        if hasattr(self, "running_var") and not self.running_var.get():
+            self.running_var.set("idle")
 
     def _load_memory_panel(self) -> None:
         if self.memory_text is None:
@@ -994,6 +1014,15 @@ class LocalPilotGUI:
             self.safety_var.set("Waiting for approval")
         elif "approval accepted" in lowered or "approval denied" in lowered:
             self.safety_var.set("Guarded")
+
+    def _update_running_state(self, message: str, extra: dict[str, Any]) -> None:
+        if not hasattr(self, "running_var"):
+            return
+        lowered = message.lower()
+        if lowered == "started":
+            self.running_var.set(f"Running: {extra.get('command', '')}")
+        elif lowered in {"passed", "failed", "cancelled"}:
+            self.running_var.set("idle")
 
     def _theme_colors(self, theme: str) -> dict[str, str]:
         if theme == "light":
@@ -1179,6 +1208,22 @@ def safe_console_print(text: str = "") -> None:
 
 
 def run_cli(app: LocalPilotApp) -> None:
+    def on_event(event: dict[str, Any]) -> None:
+        if event.get("role") != "Tests":
+            return
+        message = event.get("message", "")
+        extra = event.get("extra") or {}
+        if message == "started":
+            safe_console_print(f"[Tests] Running: {extra.get('command', '')}")
+        elif message in {"passed", "failed", "cancelled"}:
+            safe_console_print(
+                f"[Tests] {message} | exit={extra.get('exit_code')} | duration={extra.get('duration_seconds')}s | {extra.get('summary', '')}"
+            )
+        else:
+            stream = extra.get("stream", "stdout")
+            safe_console_print(f"[Tests:{stream}] {message}")
+
+    app.logger.register_callback(on_event)
     safe_console_print("LocalPilot CLI started. Type 'exit' to quit.")
     safe_console_print(app.describe_capabilities())
     if app.ollama.last_status not in {"running", "started_by_localpilot"}:

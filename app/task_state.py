@@ -21,6 +21,12 @@ DEFAULT_TASK_STATE: dict[str, Any] = {
     "confidence_score": None,
     "files_changed": [],
     "tests_run": [],
+    "last_test_command": "",
+    "last_test_exit_code": None,
+    "last_test_status": "",
+    "last_test_summary": "",
+    "tests_run_at": "",
+    "tests_running": False,
     "next_recommended_action": "",
     "operating_profile": "reliable_stack",
 }

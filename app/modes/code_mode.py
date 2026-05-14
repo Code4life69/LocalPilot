@@ -82,6 +82,12 @@ class CodeMode:
         if self._is_professional_build_request(lowered):
             return self._run_professional_build(text)
 
+        if self._is_test_runner_request(lowered):
+            return self.app.start_project_tests()
+
+        if lowered in {"cancel tests", "stop tests"}:
+            return self.app.cancel_project_tests()
+
         if self._is_app_verification_request(lowered):
             return self._verify_generated_app(text)
 
@@ -159,6 +165,17 @@ class CodeMode:
 
     def _is_professional_build_request(self, lowered: str) -> bool:
         return lowered.startswith("professional build ") or lowered.startswith("build this professionally")
+
+    def _is_test_runner_request(self, lowered: str) -> bool:
+        return lowered in {
+            "run pytest",
+            "run tests",
+            "pytest",
+            "test project",
+            "verify project",
+            "test localpilot",
+            "verify localpilot",
+        }
 
     def _extract_professional_build_request(self, text: str) -> str:
         lowered = text.lower().strip()

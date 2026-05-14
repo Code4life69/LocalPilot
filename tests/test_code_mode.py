@@ -51,6 +51,8 @@ class DummyApp:
                 "chat_with_role": lambda self, role, system_prompt, user_text: f"{role}|{user_text}",
             },
         )()
+        self.start_project_tests = lambda: {"ok": True, "status": "started", "message": "Started tests."}
+        self.cancel_project_tests = lambda: {"ok": True, "message": "Test cancellation requested."}
 
     def ask_approval(self, prompt):
         return True
@@ -564,3 +566,23 @@ def test_professional_build_can_request_research(tmp_path, monkeypatch):
     assert result["status"] == "completed"
     assert calls
     assert "sqlite3" in result["research"]["summary"].lower()
+
+
+def test_code_mode_starts_test_runner_for_run_pytest(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle({"user_text": "run pytest"})
+
+    assert result["ok"] is True
+    assert result["status"] == "started"
+
+
+def test_code_mode_can_cancel_running_tests(tmp_path):
+    app = DummyApp(tmp_path)
+    mode = CodeMode(app)
+
+    result = mode.handle({"user_text": "cancel tests"})
+
+    assert result["ok"] is True
+    assert result["message"] == "Test cancellation requested."
