@@ -1,3 +1,47 @@
+def test_dev_status_command_reports_status(tmp_path):
+    # With task_state present
+    class DummyTaskState:
+        def snapshot(self):
+            return {
+                "operating_profile": "reliable_stack",
+                "current_goal": "Test goal",
+                "last_test_status": "passed",
+                "last_test_summary": "All tests passed."
+            }
+        def update(self, **kwargs):
+            return self.snapshot()
+
+    class DummyApp:
+        def __init__(self):
+            self.root_dir = tmp_path
+            self.capabilities = {"name": "LocalPilot", "modes": ["chat"]}
+            self.task_state = DummyTaskState()
+        def resolve_runtime_model_for_role(self, role):
+            return "main-model"
+
+    mode = ChatMode(DummyApp())
+    result = mode.handle({"user_text": "dev status"})
+    assert result["ok"]
+    assert "Active operating profile: reliable_stack" in result["message"]
+    assert "Active main model: main-model" in result["message"]
+    assert "task_state exists: yes" in result["message"]
+    assert "current_goal: Test goal" in result["message"]
+    assert "last_test_status: passed" in result["message"]
+    assert "last_test_summary: All tests passed." in result["message"]
+    assert "checking the local coding-agent workflow" in result["message"]
+
+    # Without task_state
+    class DummyAppNoTaskState:
+        def __init__(self):
+            self.root_dir = tmp_path
+            self.capabilities = {"name": "LocalPilot", "modes": ["chat"]}
+        def resolve_runtime_model_for_role(self, role):
+            return "main-model"
+
+    mode = ChatMode(DummyAppNoTaskState())
+    result = mode.handle({"user_text": "dev status"})
+    assert result["ok"]
+    assert "task_state exists: no" in result["message"]
 from pathlib import Path
 from types import SimpleNamespace
 

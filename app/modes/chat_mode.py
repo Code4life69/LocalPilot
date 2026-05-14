@@ -18,6 +18,37 @@ class ChatMode:
                 active_model=self.app.resolve_runtime_model_for_role("main") if hasattr(self.app, "resolve_runtime_model_for_role") else "",
                 last_action="chat:handle",
             )
+        if lowered == "dev status":
+            # Gather status info
+            op_profile = None
+            main_model = None
+            task_state_exists = hasattr(self.app, "task_state")
+            current_goal = last_test_status = last_test_summary = None
+            if task_state_exists:
+                try:
+                    snapshot = self.app.task_state.snapshot()
+                    op_profile = snapshot.get("operating_profile")
+                    current_goal = snapshot.get("current_goal")
+                    last_test_status = snapshot.get("last_test_status")
+                    last_test_summary = snapshot.get("last_test_summary")
+                except Exception:
+                    op_profile = None
+            # Try to get main model
+            if hasattr(self.app, "resolve_runtime_model_for_role"):
+                try:
+                    main_model = self.app.resolve_runtime_model_for_role("main")
+                except Exception:
+                    main_model = None
+            status_lines = [
+                f"Active operating profile: {op_profile if op_profile is not None else '(unknown)'}",
+                f"Active main model: {main_model if main_model else '(unknown)'}",
+                f"task_state exists: {'yes' if task_state_exists else 'no'}",
+                f"current_goal: {current_goal if current_goal else '(none)'}",
+                f"last_test_status: {last_test_status if last_test_status else '(none)'}",
+                f"last_test_summary: {last_test_summary if last_test_summary else '(none)'}",
+                "Note: This command is for checking the local coding-agent workflow."
+            ]
+            return {"ok": True, "message": "\n".join(status_lines)}
         if lowered in {"help", "/help"}:
             caps = self.app.capabilities
             return {
