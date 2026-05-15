@@ -1,7 +1,7 @@
 {
-  "wsEndpoint": "ws://127.0.0.1:9296/devtools/browser/9a426876-abdd-4a25-8844-50cd43e0a1a7",
-  "browserURL": "http://127.0.0.1:9296",
-  "launchedAt": "2026-05-15T22:06:40.074Z",
+  "wsEndpoint": "ws://127.0.0.1:10003/devtools/browser/9e39bb85-d860-4871-baa9-6b780ae931f3",
+  "browserURL": "http://127.0.0.1:10003",
+  "launchedAt": "2026-05-15T22:24:20.200Z",
   "executablePath": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-  "browserPid": 26396
+  "browserPid": 18024
 }
