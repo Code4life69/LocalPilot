@@ -28,7 +28,7 @@ def latest_screenshot(output_dir: str | Path | None = None) -> str | None:
     folder = Path(output_dir) if output_dir is not None else DEFAULT_SCREENSHOT_DIR
     if not folder.exists():
         return None
-    screenshots = sorted(folder.glob("screenshot_*.png"), key=lambda item: item.stat().st_mtime, reverse=True)
+    screenshots = sorted(folder.glob("screenshot_*.png"), key=lambda item: item.name, reverse=True)
     if not screenshots:
         return None
     return str(screenshots[0])

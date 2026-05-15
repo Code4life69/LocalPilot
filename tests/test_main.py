@@ -600,24 +600,81 @@ def test_main_starts_cli_thread_with_gui_when_enabled(monkeypatch):
 def test_describe_lmstudio_screenshot_returns_description(monkeypatch, tmp_path):
     app = LocalPilotApp.__new__(LocalPilotApp)
     app.root_dir = tmp_path
-    app.settings = {
-        "lmstudio": {
-            "vision_model": "qwen3-vl-8b-instruct",
-            "screenshot_dir": "logs/screenshots",
-        }
-    }
-    app.lmstudio = SimpleNamespace(
-        default_vision_model="qwen3-vl-8b-instruct",
-        chat_vision=lambda **kwargs: "A desktop with a browser open.",
+    monkeypatch.setattr(
+        main_module,
+        "run_lmstudio_vision_test",
+        lambda root_dir: (0, "LM Studio screenshot vision test\n- vision response: A desktop with a browser open."),
     )
-
-    screenshot_path = tmp_path / "logs" / "screenshots" / "shot.png"
-    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-    screenshot_path.write_bytes(b"png")
-    monkeypatch.setattr(main_module, "take_screenshot", lambda _path: {"ok": True, "path": str(screenshot_path)})
 
     report = app.describe_lmstudio_screenshot()
 
     assert "LM Studio screenshot vision test" in report
-    assert str(screenshot_path) in report
     assert "A desktop with a browser open." in report
+
+
+def test_run_lmstudio_vision_test_returns_clean_unreachable_error(monkeypatch, tmp_path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(
+        """
+{
+  "lmstudio": {
+    "host": "http://localhost:1234/v1",
+    "timeout_seconds": 90,
+    "text_model": "qwen2.5-coder-14b-instruct",
+    "vision_model": "qwen3-vl-8b-instruct",
+    "screenshot_dir": "logs/screenshots"
+  }
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def is_server_available(self):
+            return False
+
+    monkeypatch.setattr(main_module, "LMStudioClient", FakeClient)
+
+    exit_code, output = main_module.run_lmstudio_vision_test(tmp_path)
+
+    assert exit_code == 2
+    assert "LM Studio URL: http://localhost:1234/v1" in output
+    assert "model used: qwen3-vl-8b-instruct" in output
+    assert "LM Studio is not reachable at http://localhost:1234/v1" in output
+
+
+def test_main_handles_lmstudio_vision_test_before_app_bootstrap(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module.Path, "resolve", lambda self: tmp_path / "app" / "main.py")
+    monkeypatch.setattr(main_module, "run_lmstudio_vision_test", lambda root_dir: (0, "vision ok"))
+
+    class ExplodingApp:
+        def __init__(self, root_dir):
+            raise AssertionError("LocalPilotApp should not be constructed for lmstudio vision test")
+
+    printed = []
+    monkeypatch.setattr(main_module, "LocalPilotApp", ExplodingApp)
+    monkeypatch.setattr(main_module, "safe_console_print", lambda text="": printed.append(text))
+
+    exit_code = main_module.main(["--lmstudio-vision-test"])
+
+    assert exit_code == 0
+    assert printed == ["vision ok"]
+
+
+def test_main_handles_agent_cli_before_app_bootstrap(monkeypatch, tmp_path):
+    monkeypatch.setattr(main_module.Path, "resolve", lambda self: tmp_path / "app" / "main.py")
+    monkeypatch.setattr(main_module, "run_agent_cli", lambda root_dir: 0)
+
+    class ExplodingApp:
+        def __init__(self, root_dir):
+            raise AssertionError("LocalPilotApp should not be constructed for agent CLI")
+
+    monkeypatch.setattr(main_module, "LocalPilotApp", ExplodingApp)
+
+    exit_code = main_module.main(["--agent-cli"])
+
+    assert exit_code == 0

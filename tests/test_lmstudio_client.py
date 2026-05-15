@@ -2,6 +2,7 @@ import base64
 from pathlib import Path
 
 import pytest
+import requests
 
 from app.lmstudio_client import LMStudioClient
 
@@ -73,3 +74,14 @@ def test_chat_vision_posts_chat_completions_payload(tmp_path, monkeypatch):
     assert seen["timeout"] == 12
     assert seen["json"]["max_tokens"] == 111
     assert seen["json"]["messages"][0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_is_server_available_returns_false_on_request_error(monkeypatch):
+    client = LMStudioClient()
+
+    def fake_get(*args, **kwargs):
+        raise requests.RequestException("boom")
+
+    monkeypatch.setattr("app.lmstudio_client.requests.get", fake_get)
+
+    assert client.is_server_available() is False

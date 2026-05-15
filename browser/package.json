@@ -1,0 +1,11 @@
+{
+  "name": "localpilot-browser",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Puppeteer-controlled browser bridge for LocalPilot",
+  "main": "browser_server.js",
+  "license": "MIT",
+  "dependencies": {
+    "puppeteer-core": "^24.9.0"
+  }
+}

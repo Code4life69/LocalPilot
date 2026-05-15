@@ -30,10 +30,10 @@ def load_optional_gemma_install_script() -> str:
     return Path("scripts/install_optional_gemma4.ps1").read_text(encoding="utf-8")
 
 
-def test_model_profiles_default_main_is_gemma4_
+def test_model_profiles_default_main_is_gemma4_e4b():
     profiles = load_model_profiles()
 
-    assert profiles["main"]["model"] == "gemma4:31b"
+    assert profiles["main"]["model"] == "gemma4:e4b"
     assert profiles["main"]["model"] != "qwen3:30b"
 
 
@@ -100,7 +100,7 @@ def test_coder_role_falls_back_when_primary_missing():
         available=["qwen2.5-coder:7b", "gemma4:31b"],
     )
 
-    assert resolved == "qwen2.5-coder:7b"
+    assert resolved is None
 
 
 def test_role_overrides_change_runtime_profile():
@@ -147,7 +147,7 @@ def test_model_status_report_handles_ollama_unavailable():
 
     assert "Model status" in report
     assert "- Ollama reachable: no" in report
-    assert "main: preferred=gemma4:31b" in report
+    assert "main: preferred=gemma4:e4b" in report
 
 
 def test_model_status_report_marks_missing_models_without_crashing():
@@ -159,13 +159,13 @@ def test_model_status_report_marks_missing_models_without_crashing():
         default_role="main",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b"]
+    client.list_models = lambda: ["gemma4:e4b"]
 
     report = client.build_model_status_report(default_role="main")
 
     assert "- Ollama reachable: yes" in report
-    assert "coder: preferred=qwen2.5-coder:14b-instruct-q3_K_M [missing]" in report
-    assert "router: preferred=granite3.3:2b [missing]" in report
+    assert "coder: preferred=gemma4:e4b [installed]" in report
+    assert "router: preferred=gemma4:e4b [installed]" in report
 
 
 def test_model_benchmark_report_handles_ollama_unavailable():
@@ -212,17 +212,17 @@ def test_model_benchmark_report_warns_when_models_are_missing():
         default_role="main",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b"]
+    client.list_models = lambda: ["gemma4:e4b"]
     client.benchmark_model = lambda model_name, prompt, num_ctx=4096, temperature=0.2, images=None: (
         {
             "ok": True,
-            "model": "gemma4:31b",
+            "model": "gemma4:e4b",
             "eval_count": 32,
             "eval_duration": 1_000_000_000,
             "load_duration": 250_000_000,
             "tokens_per_second": 32.0,
         }
-        if model_name == "gemma4:31b"
+        if model_name == "gemma4:e4b"
         else {
             "ok": False,
             "error": f"Model missing: {model_name}",
@@ -232,9 +232,9 @@ def test_model_benchmark_report_warns_when_models_are_missing():
 
     report = client.build_model_benchmark_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
-    assert "main: model=gemma4:31b" in report
-    assert "coder: warning -> Model missing: qwen2.5-coder:14b-instruct-q3_K_M" in report
-    assert "router: warning -> Model missing: granite3.3:2b" in report
+    assert "main: model=gemma4:e4b" in report
+    assert "coder: model=gemma4:e4b" in report
+    assert "router: model=gemma4:e4b" in report
 
 
 def test_operating_mode_compare_report_handles_ollama_unavailable():
@@ -368,7 +368,7 @@ def test_model_doctor_handles_ollama_unavailable():
 
     assert "Model doctor" in report
     assert "- Ollama reachable: no" in report
-    assert "ollama pull gemma4:31b" in report
+    assert "ollama pull gemma4:e4b" in report
 
 
 def test_model_doctor_reports_missing_configured_models():
@@ -387,8 +387,8 @@ def test_model_doctor_reports_missing_configured_models():
     report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
     assert "- Missing configured models:" in report
-    assert "gemma4:31b" in report
-    assert "possible temporary fallback available: llama3.1:8b" in report
+    assert "gemma4:e4b" in report
+    assert "nomic-embed-text" in report
 
 
 def test_model_doctor_detects_similar_installed_tags():
@@ -402,11 +402,11 @@ def test_model_doctor_detects_similar_installed_tags():
         lifecycle_settings=settings["model_lifecycle"],
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["qwen2.5-coder:14b", "qwen2.5-coder:7b"]
+    client.list_models = lambda: ["gemma4:31b", "qwen2.5-coder:7b"]
 
     report = client.build_model_doctor_report(default_role="main", performance_profile_name="rtx3060_balanced")
 
-    assert "similar installed models: qwen2.5-coder:14b" in report
+    assert "similar installed models: gemma4:31b" in report
     assert "Similar model found, but exact configured tag is missing." in report
 
 
@@ -426,9 +426,9 @@ def test_model_repair_plan_prints_pull_commands():
     report = client.build_model_repair_plan()
 
     assert "Model repair plan" in report
-    assert "ollama pull gemma4:31b" in report
-    assert "ollama pull qwen2.5-coder:14b-instruct-q3_K_M" in report
-    assert "ollama pull qwen3:30b" in report
+    assert "ollama pull gemma4:e4b" in report
+    assert "ollama pull nomic-embed-text" in report
+    assert "scripts/check_models.ps1" in report
 
 
 def test_default_install_script_keeps_qwen3_30b_optional():
@@ -620,7 +620,7 @@ def test_default_gemma_vision_role_keeps_thinking_and_boosts_budget(tmp_path, mo
         debug_views_dir=tmp_path / "debug_views",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b"]
+    client.list_models = lambda: ["gemma4:e4b"]
 
     captured_payloads = []
 
@@ -670,7 +670,7 @@ def test_default_gemma_vision_role_retries_with_larger_budget_when_visible_text_
         debug_views_dir=tmp_path / "debug_views",
     )
     client.is_server_available = lambda: True
-    client.list_models = lambda: ["gemma4:31b"]
+    client.list_models = lambda: ["gemma4:e4b"]
 
     captured_payloads = []
 

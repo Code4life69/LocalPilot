@@ -21,6 +21,14 @@ class LMStudioClient:
         self.default_text_model = default_text_model
         self.default_vision_model = default_vision_model
 
+    def is_server_available(self) -> bool:
+        try:
+            response = requests.get(f"{self.host}/models", timeout=min(self.timeout_seconds, 5))
+            response.raise_for_status()
+            return True
+        except requests.RequestException:
+            return False
+
     def encode_image_as_data_url(self, image_path: str | Path) -> str:
         path = Path(image_path)
         if not path.exists():

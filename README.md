@@ -224,6 +224,28 @@ python localpilot.py
 
 By default LocalPilot starts the CLI and tries to open the GUI alongside it. If Tkinter is unavailable, the CLI still runs.
 
+## Puppeteer-Controlled Browser
+
+Install the browser bridge dependencies:
+
+```powershell
+npm install --prefix browser
+```
+
+If LocalPilot does not find Chrome or Edge automatically, set a browser path explicitly:
+
+```powershell
+$env:LOCALPILOT_BROWSER_EXECUTABLE="C:\Program Files\Google\Chrome\Application\chrome.exe"
+```
+
+Then run the AI-driven agent CLI:
+
+```powershell
+python localpilot.py --agent-cli
+```
+
+For websites, the agent prefers Puppeteer-controlled browser tools over desktop mouse tools.
+
 For double-click launch on Windows, use [Run LocalPilot.bat](</C:/LocalPilot/Run LocalPilot.bat>). It will:
 
 - create `.venv` automatically on first run if it does not exist

@@ -15,6 +15,7 @@ from pathlib import Path
 from tkinter import scrolledtext, ttk
 from typing import Any
 
+from app.agent import LocalPilotAgent
 from app.git_sync import GitSyncManager
 from app.lmstudio_client import LMStudioClient
 from app.llm.ollama_client import OllamaClient
@@ -32,12 +33,124 @@ from app.task_state import TaskStateStore
 from app.tools.desktop_lessons import DesktopLessonStore
 from app.tools.screen import take_screenshot
 from app.tools.test_runner import TestRunner
+from app.tool_registry import ToolRegistry
+
+
+def load_settings(root_dir: str | Path) -> dict[str, Any]:
+    path = Path(root_dir) / "config" / "settings.json"
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def run_lmstudio_vision_test(root_dir: str | Path) -> tuple[int, str]:
+    root_path = Path(root_dir)
+    settings = load_settings(root_path)
+    lmstudio_settings = settings.get("lmstudio", {})
+    host = lmstudio_settings.get("host", "http://localhost:1234/v1")
+    model = lmstudio_settings.get("vision_model", "qwen3-vl-8b-instruct")
+    screenshot_dir = root_path / lmstudio_settings.get("screenshot_dir", "logs/screenshots")
+    client = LMStudioClient(
+        host=host,
+        timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 90)),
+        default_text_model=lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"),
+        default_vision_model=model,
+    )
+
+    lines = [
+        "LM Studio screenshot vision test",
+        f"- LM Studio URL: {host}",
+        f"- model used: {model}",
+    ]
+
+    if not client.is_server_available():
+        lines.append(f"LM Studio is not reachable at {host}")
+        lines.append(f"Start LM Studio server and load {model}.")
+        return 2, "\n".join(lines)
+
+    screenshot = take_screenshot(screenshot_dir)
+    if not screenshot.get("ok"):
+        lines.append(f"Screenshot failed: {screenshot.get('error', 'unknown error')}")
+        return 1, "\n".join(lines)
+
+    screenshot_path = str(screenshot["path"])
+    prompt = "Describe this screenshot in one sentence and mention any obvious visible text."
+    lines.append(f"- screenshot path: {screenshot_path}")
+    lines.append(f"- prompt: {prompt}")
+
+    try:
+        description = client.chat_vision(
+            prompt=prompt,
+            image_path=screenshot_path,
+            model=model,
+            max_tokens=512,
+        )
+    except Exception as exc:
+        lines.append(f"LM Studio vision failed: {exc}")
+        return 1, "\n".join(lines)
+
+    lines.append(f"- vision response: {description}")
+    return 0, "\n".join(lines)
+
+
+def run_agent_cli(root_dir: str | Path) -> int:
+    root_path = Path(root_dir)
+    settings = load_settings(root_path)
+    logger = AppLogger(root_path / settings.get("logs_dir", "logs"))
+    lmstudio_settings = settings.get("lmstudio", {})
+    lmstudio_client = LMStudioClient(
+        host=lmstudio_settings.get("host", "http://localhost:1234/v1"),
+        timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 90)),
+        default_text_model=lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"),
+        default_vision_model=lmstudio_settings.get("vision_model", "qwen3-vl-8b-instruct"),
+    )
+    safety = SafetyManager(workspace_root=root_path / "workspace")
+    tool_registry = ToolRegistry(
+        root_dir=root_path,
+        safety=safety,
+        logger=logger,
+        lmstudio_client=lmstudio_client,
+    )
+    agent = LocalPilotAgent(
+        llm_client=lmstudio_client,
+        tool_registry=tool_registry,
+        planner_model=lmstudio_client.default_text_model,
+    )
+
+    safe_console_print("LocalPilot Agent CLI")
+    safe_console_print("Type 'exit' to quit.")
+
+    while True:
+        try:
+            user_text = input("\nUser: ").strip()
+        except EOFError:
+            print()
+            return 0
+        if not user_text:
+            continue
+        if user_text.lower() in {"exit", "quit"}:
+            return 0
+
+        result = agent.run_task(user_text)
+        for step in result.get("transcript", []):
+            if step["type"] == "tool_call":
+                safe_console_print("\nAI tool call:")
+                safe_console_print(json.dumps(step["payload"], indent=2))
+            elif step["type"] == "tool_result":
+                safe_console_print("\nTool result:")
+                safe_console_print(json.dumps(step["payload"], indent=2))
+            elif step["type"] == "question":
+                safe_console_print(f"\nAI question:\n{step['payload']['message']}")
+            elif step["type"] == "final":
+                safe_console_print(f"\nAI final:\n{step['payload']['message']}")
+
+        if not result.get("ok"):
+            safe_console_print(f"\nAgent error:\n{result.get('error', 'Unknown agent error.')}")
 
 
 class LocalPilotApp:
     def __init__(self, root_dir: str | Path) -> None:
         self.root_dir = Path(root_dir)
-        self.settings = self._load_json(self.root_dir / "config" / "settings.json")
+        self.settings = load_settings(self.root_dir)
         self.model_profiles = self._load_json(self.root_dir / "config" / "model_profiles.json")
         self.performance_profiles = self._load_json(self.root_dir / "config" / "performance_profiles.json")
         self.operating_profiles = self._load_json(self.root_dir / "config" / "operating_profiles.json")
@@ -246,32 +359,8 @@ class LocalPilotApp:
         return self.ollama.build_vision_test_report()
 
     def describe_lmstudio_screenshot(self) -> str:
-        lmstudio_settings = self.settings.get("lmstudio", {})
-        screenshot_dir = self.root_dir / lmstudio_settings.get("screenshot_dir", "logs/screenshots")
-        screenshot = take_screenshot(screenshot_dir)
-        lines = ["LM Studio screenshot vision test"]
-        if not screenshot.get("ok"):
-            lines.append(str(screenshot.get("error", "Screenshot capture failed.")))
-            return "\n".join(lines)
-
-        screenshot_path = screenshot["path"]
-        prompt = "Describe this screenshot in one sentence and mention any obvious visible text."
-        lines.append(f"- screenshot: {screenshot_path}")
-        lines.append(f"- model: {lmstudio_settings.get('vision_model', self.lmstudio.default_vision_model)}")
-        try:
-            description = self.lmstudio.chat_vision(
-                prompt=prompt,
-                image_path=screenshot_path,
-                model=lmstudio_settings.get("vision_model", self.lmstudio.default_vision_model),
-                max_tokens=512,
-            )
-        except Exception as exc:
-            lines.append(f"LM Studio vision failed: {exc}")
-            return "\n".join(lines)
-
-        lines.append(f"- prompt: {prompt}")
-        lines.append(f"- description: {description}")
-        return "\n".join(lines)
+        _exit_code, output = run_lmstudio_vision_test(self.root_dir)
+        return output
 
     def describe_system_doctor(self) -> str:
         return build_system_doctor_report(
@@ -1305,6 +1394,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Take a real screenshot, send it to LM Studio vision, and print the description.",
     )
     parser.add_argument(
+        "--agent-cli",
+        action="store_true",
+        help="Run the lightweight AI-driven agent CLI without starting the GUI.",
+    )
+    parser.add_argument(
         "--system-doctor",
         action="store_true",
         help="Print dependency and runtime diagnostics and exit without starting the GUI.",
@@ -1325,6 +1419,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     root_dir = Path(__file__).resolve().parent.parent
+
+    if args.lmstudio_vision_test:
+        exit_code, output = run_lmstudio_vision_test(root_dir)
+        safe_console_print(output)
+        return exit_code
+
+    if args.agent_cli:
+        return run_agent_cli(root_dir)
+
     app = LocalPilotApp(root_dir)
     atexit.register(app.shutdown)
 
@@ -1340,11 +1443,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.vision_test:
         safe_console_print(app.describe_vision_test())
-        app.shutdown()
-        return 0
-
-    if args.lmstudio_vision_test:
-        safe_console_print(app.describe_lmstudio_screenshot())
         app.shutdown()
         return 0
 
@@ -1374,3 +1472,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_cli(app)
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
