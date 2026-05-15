@@ -22,6 +22,7 @@ from app.llm.ollama_client import OllamaClient
 from app.llm.prompts import build_system_prompt
 from app.logger import AppLogger
 from app.memory import MemoryStore
+from app.modes.agent_mode import AgentMode
 from app.modes.chat_mode import ChatMode
 from app.modes.code_mode import CodeMode
 from app.modes.desktop_mode import DesktopMode
@@ -190,7 +191,21 @@ class LocalPilotApp:
         self.test_runner = TestRunner(self)
         self._apply_operating_profile(self._active_operating_profile_name())
         self._initialize_ollama()
-        self.safety = SafetyManager(approval_callback=self._approval_callback)
+        self.safety = SafetyManager(
+            approval_callback=self._approval_callback,
+            workspace_root=self.root_dir / "workspace",
+        )
+        self.tool_registry = ToolRegistry(
+            root_dir=self.root_dir,
+            safety=self.safety,
+            logger=self.logger,
+            lmstudio_client=self.lmstudio,
+        )
+        self.agent = LocalPilotAgent(
+            llm_client=self.lmstudio,
+            tool_registry=self.tool_registry,
+            planner_model=self.lmstudio.default_text_model,
+        )
         self.gui: LocalPilotGUI | None = None
         self._shutdown_complete = False
         self.pending_followup: dict[str, Any] | None = None
@@ -199,6 +214,7 @@ class LocalPilotApp:
             "code": CodeMode(self),
             "research": ResearchMode(self),
             "desktop": DesktopMode(self),
+            "agent": AgentMode(self),
         }
         self._run_git_sync("startup")
 
@@ -377,7 +393,7 @@ class LocalPilotApp:
     def cancel_project_tests(self) -> dict[str, Any]:
         return self.test_runner.cancel()
 
-    def process_user_input(self, user_text: str) -> dict[str, Any]:
+    def process_user_input(self, user_text: str, requested_mode: str | None = None) -> dict[str, Any]:
         followup_request = self._process_pending_followup(user_text)
         if followup_request is not None:
             return followup_request
@@ -399,18 +415,22 @@ class LocalPilotApp:
         request: dict[str, Any] = {
             "request_id": uuid.uuid4().hex[:12],
             "user_text": user_text,
-            "mode": self.router.classify(user_text),
+            "mode": self._resolve_mode(user_text, requested_mode),
+            "requested_mode": requested_mode or "auto",
             "requires_confirmation": False,
             "approved": None,
             "result": None,
             "events": [],
         }
-        self.logger.event("Router", f"classified as {request['mode']}", user_text=user_text)
-        request["events"].append({"role": "Router", "message": f"classified as {request['mode']}"})
+        router_message = (
+            f"forced mode {request['mode']}" if request["requested_mode"] != "auto" else f"classified as {request['mode']}"
+        )
+        self.logger.event("Router", router_message, user_text=user_text, requested_mode=request["requested_mode"])
+        request["events"].append({"role": "Router", "message": router_message})
         self.logger.event("Reasoner", f"dispatching mode {request['mode']}")
         self.logger.event(f"Mode:{request['mode']}", "activated")
         active_role = self._role_for_mode(request["mode"])
-        active_model = self.resolve_runtime_model_for_role(active_role)
+        active_model = self._active_model_for_mode(request["mode"])
         task_state_loaded = hasattr(self, "task_state")
         if hasattr(self, "task_state"):
             self.task_state.update(
@@ -473,14 +493,27 @@ class LocalPilotApp:
             "desktop": "main",
             "memory": "main",
             "safety": "main",
+            "agent": "agent",
         }
         return mapping.get(mode, "main")
+
+    def _active_model_for_mode(self, mode: str) -> str:
+        if mode == "agent":
+            return self.lmstudio.default_text_model
+        return self.resolve_runtime_model_for_role(self._role_for_mode(mode))
+
+    def _resolve_mode(self, user_text: str, requested_mode: str | None) -> str:
+        normalized = (requested_mode or "").strip().lower()
+        if normalized and normalized not in {"auto", "idle"}:
+            if normalized in {"chat", "code", "research", "desktop", "memory", "agent"}:
+                return normalized
+        return self.router.classify(user_text)
 
     def _update_task_state_after_result(self, request: dict[str, Any], result: dict[str, Any]) -> None:
         mode = request.get("mode", "chat")
         updates: dict[str, Any] = {
             "active_mode": mode,
-            "active_model": self.resolve_runtime_model_for_role(self._role_for_mode(mode)),
+            "active_model": self._active_model_for_mode(mode),
             "last_action": f"completed:{mode}" if result.get("ok") else f"failed:{mode}",
             "last_failure": "" if result.get("ok") else result.get("error", "Unknown failure"),
             "confidence_score": result.get("confidence_score"),
@@ -551,6 +584,8 @@ class LocalPilotApp:
         if mode == "safety":
             return "blocked"
         if mode == "desktop":
+            return "guarded"
+        if mode == "agent":
             return "guarded"
         if mode == "code" and self.test_runner.is_running():
             return "running-tests"
@@ -698,6 +733,7 @@ class LocalPilotGUI:
         self.style.configure("Status.TFrame", background=colors["panel"])
         self.style.configure("StatusLabel.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10))
         self.style.configure("StatusValue.TLabel", background=colors["panel"], foreground=colors["accent"], font=("Segoe UI", 10, "bold"))
+        self.style.configure("ModeSelect.TCombobox", fieldbackground=colors["surface"], background=colors["surface"], foreground=colors["text"])
         self.style.configure("Tabs.TNotebook", background=colors["bg"], borderwidth=0)
         self.style.configure("Tabs.TNotebook.Tab", font=("Segoe UI", 10), padding=(14, 8), background=colors["panel"], foreground=colors["muted"])
         self.style.map("Tabs.TNotebook.Tab", background=[("selected", colors["surface"])], foreground=[("selected", colors["text"])])
@@ -711,6 +747,7 @@ class LocalPilotGUI:
         self.ollama_var = tk.StringVar(value="unknown")
         self.main_model_var = tk.StringVar(value="n/a")
         self.vision_model_var = tk.StringVar(value="n/a")
+        self.browser_var = tk.StringVar(value="idle")
         self.safety_var = tk.StringVar(value="Guarded")
         self.running_var = tk.StringVar(value="idle")
 
@@ -718,8 +755,9 @@ class LocalPilotGUI:
             ("Mode", self.mode_var),
             ("Role", self.role_var),
             ("Ollama", self.ollama_var),
-            ("Main", self.main_model_var),
+            ("Brain", self.main_model_var),
             ("Vision", self.vision_model_var),
+            ("Browser", self.browser_var),
             ("Safety", self.safety_var),
             ("Running", self.running_var),
         ]
@@ -780,6 +818,7 @@ class LocalPilotGUI:
         input_frame = tk.Frame(left, bg=colors["bg"])
         input_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         input_frame.grid_columnconfigure(0, weight=1)
+        self.input_mode_var = tk.StringVar(value="auto")
         self.input_entry = tk.Entry(
             input_frame,
             font=("Segoe UI", 11),
@@ -791,8 +830,18 @@ class LocalPilotGUI:
         )
         self.input_entry.grid(row=0, column=0, sticky="ew")
         self.input_entry.bind("<Return>", lambda _event: self.submit_input())
+        self.mode_selector = ttk.Combobox(
+            input_frame,
+            textvariable=self.input_mode_var,
+            values=["auto", "chat", "code", "research", "desktop", "agent"],
+            state="readonly",
+            width=10,
+            style="ModeSelect.TCombobox",
+        )
+        self.mode_selector.grid(row=0, column=1, padx=(10, 0))
+        self.mode_selector.bind("<<ComboboxSelected>>", lambda _event: self._on_mode_selected())
         send_button = ttk.Button(input_frame, text="Send", command=self.submit_input, style="Action.TButton")
-        send_button.grid(row=0, column=1, padx=(10, 0))
+        send_button.grid(row=0, column=2, padx=(10, 0))
 
         notebook = ttk.Notebook(right, style="Tabs.TNotebook")
         notebook.grid(row=0, column=0, sticky="nsew")
@@ -827,14 +876,17 @@ class LocalPilotGUI:
 
     def submit_text(self, text: str) -> None:
         self._append_chat_message("You", text, speaker_tag="user")
-        request = self.app.process_user_input(text)
+        request = self.app.process_user_input(text, requested_mode=self._selected_request_mode())
         self._remember_debug_image(request["result"])
-        rendered = format_result(request["result"])
-        speaker_tag = "assistant"
-        body_tag = "body"
-        if isinstance(request["result"], dict) and request["result"].get("error"):
-            body_tag = "error"
-        self._append_chat_message("LocalPilot", rendered, speaker_tag=speaker_tag, body_tag=body_tag)
+        if request["mode"] == "agent":
+            self._render_agent_result(request["result"])
+        else:
+            rendered = format_result(request["result"])
+            speaker_tag = "assistant"
+            body_tag = "body"
+            if isinstance(request["result"], dict) and request["result"].get("error"):
+                body_tag = "error"
+            self._append_chat_message("LocalPilot", rendered, speaker_tag=speaker_tag, body_tag=body_tag)
         self._refresh_status_bar()
         self._maybe_refresh_memory(request["result"])
 
@@ -851,6 +903,7 @@ class LocalPilotGUI:
                 self.mode_var.set(role.replace("Mode:", "").strip())
             if role == "Safety":
                 self._update_safety_state(message)
+                self._append_safety_event_to_chat(message, event.get("extra", {}))
             if role == "Tests":
                 self._update_running_state(message, event.get("extra", {}))
             line = f"[{event['timestamp']}] {role} -> {message}\n"
@@ -945,19 +998,89 @@ class LocalPilotGUI:
         )
 
     def _refresh_status_bar(self) -> None:
-        self.ollama_var.set(self.app.ollama.last_status.replace("_", " "))
+        current_mode = self.mode_var.get().strip().lower() if hasattr(self, "mode_var") else ""
+        selected_mode = self._selected_request_mode() or current_mode
+        agent_active = selected_mode == "agent"
+        self.ollama_var.set("lm studio" if agent_active else self.app.ollama.last_status.replace("_", " "))
         self.main_model_var.set(
-            self.app.ollama.active_main_model
-            or self.app.model_profiles.get("main", {}).get("model", "n/a")
+            self._display_model_name(self.app.lmstudio.default_text_model)
+            if agent_active
+            else (
+                self.app.ollama.active_main_model
+                or self.app.model_profiles.get("main", {}).get("model", "n/a")
+            )
         )
         self.vision_model_var.set(
-            self.app.ollama.active_vision_model
-            or self.app.model_profiles.get("vision", {}).get("model", "n/a")
+            self._display_model_name(self.app.lmstudio.default_vision_model)
+            if agent_active
+            else (
+                self.app.ollama.active_vision_model
+                or self.app.model_profiles.get("vision", {}).get("model", "n/a")
+            )
         )
+        if hasattr(self, "browser_var"):
+            self.browser_var.set("Puppeteer" if agent_active else "idle")
         if not self.safety_var.get():
             self.safety_var.set("Guarded")
         if hasattr(self, "running_var") and not self.running_var.get():
             self.running_var.set("idle")
+
+    def _display_model_name(self, model_name: str) -> str:
+        return model_name.replace("-instruct", "")
+
+    def _selected_request_mode(self) -> str | None:
+        if not hasattr(self, "input_mode_var"):
+            return None
+        selected = self.input_mode_var.get().strip().lower()
+        if selected in {"", "auto", "idle"}:
+            return None
+        return selected
+
+    def _on_mode_selected(self) -> None:
+        selected = self._selected_request_mode()
+        if selected is not None:
+            self.mode_var.set(selected)
+        self._refresh_status_bar()
+
+    def _render_agent_result(self, result: dict[str, Any]) -> None:
+        transcript = result.get("transcript", []) or []
+        for step in transcript:
+            step_type = step.get("type")
+            payload = step.get("payload", {})
+            if step_type == "tool_call":
+                self._append_chat_message("Agent Tool Call", json.dumps(payload, indent=2), speaker_tag="assistant")
+            elif step_type == "tool_result":
+                self._append_chat_message(
+                    "Tool Result",
+                    json.dumps(payload, indent=2),
+                    speaker_tag="assistant",
+                    body_tag="error" if not payload.get("ok") else "body",
+                )
+            elif step_type == "question":
+                self._append_chat_message("Agent Question", str(payload.get("message", "")), speaker_tag="assistant")
+            elif step_type == "final":
+                self._append_chat_message("Agent", str(payload.get("message", "")), speaker_tag="assistant")
+        if not transcript:
+            self._append_chat_message(
+                "Agent",
+                result.get("message") or result.get("error", ""),
+                speaker_tag="assistant",
+                body_tag="error" if result.get("error") else "body",
+            )
+        if result.get("error"):
+            self._append_chat_message("Agent Error", result["error"], speaker_tag="assistant", body_tag="error")
+
+    def _append_safety_event_to_chat(self, message: str, extra: dict[str, Any]) -> None:
+        if not hasattr(self, "output"):
+            return
+        lowered = message.lower()
+        if "approval pending" in lowered:
+            prompt = extra.get("prompt", "Approval requested.")
+            self._append_chat_message("Safety", f"Approval requested:\n{prompt}", speaker_tag="assistant")
+        elif "approval denied" in lowered:
+            self._append_chat_message("Safety", "Approval denied.", speaker_tag="assistant", body_tag="error")
+        elif "approval accepted" in lowered:
+            self._append_chat_message("Safety", "Approval accepted.", speaker_tag="assistant")
 
     def _load_memory_panel(self) -> None:
         if self.memory_text is None:

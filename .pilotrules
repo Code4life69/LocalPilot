@@ -1,0 +1,6 @@
+# LocalPilot Rules
+
+- The user does not want to chat with Python. The user chats with the AI agent.
+- Python is only the tool harness, safety layer, executor, logger, and bridge.
+- The AI must make the plan and choose tools.
+- For websites, prefer Puppeteer-controlled browser tools before desktop mouse tools.

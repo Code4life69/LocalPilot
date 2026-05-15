@@ -321,6 +321,110 @@ def test_refresh_status_bar_preserves_waiting_approval_state():
     assert gui.safety_var.get() == "Waiting for approval"
 
 
+def test_refresh_status_bar_shows_agent_models_when_agent_mode_selected():
+    class FakeVar:
+        def __init__(self, value=""):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.app = SimpleNamespace(
+        ollama=SimpleNamespace(last_status="running", active_main_model="gemma4:e4b", active_vision_model="gemma4:e4b"),
+        model_profiles={"main": {"model": "gemma4:e4b"}, "vision": {"model": "gemma4:e4b"}},
+        lmstudio=SimpleNamespace(default_text_model="qwen2.5-coder-14b-instruct", default_vision_model="qwen3-vl-8b-instruct"),
+    )
+    gui.mode_var = FakeVar("agent")
+    gui.input_mode_var = FakeVar("agent")
+    gui.ollama_var = FakeVar()
+    gui.main_model_var = FakeVar()
+    gui.vision_model_var = FakeVar()
+    gui.browser_var = FakeVar()
+    gui.safety_var = FakeVar("Guarded")
+    gui.running_var = FakeVar("idle")
+
+    gui._refresh_status_bar()
+
+    assert gui.ollama_var.get() == "lm studio"
+    assert gui.main_model_var.get() == "qwen2.5-coder-14b"
+    assert gui.vision_model_var.get() == "qwen3-vl-8b"
+    assert gui.browser_var.get() == "Puppeteer"
+
+
+def test_process_user_input_respects_requested_agent_mode():
+    events = []
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.pending_followup = None
+    app.safety = SimpleNamespace(is_broad_destructive_request=lambda text: False)
+    app.router = SimpleNamespace(classify=lambda text: "chat")
+    app.modes = {
+        "chat": SimpleNamespace(handle=lambda request: {"ok": True, "message": "chat"}),
+        "agent": SimpleNamespace(handle=lambda request: {"ok": True, "message": "agent", "transcript": []}),
+    }
+    app.logger = SimpleNamespace(event=lambda role, message, **extra: events.append((role, message, extra)))
+    app.task_state = SimpleNamespace(update=lambda **kwargs: kwargs)
+    app._active_operating_profile_name = lambda: "reliable_stack"
+    app._active_model_for_mode = lambda mode: "qwen2.5-coder-14b-instruct" if mode == "agent" else "gemma4:e4b"
+    app._role_for_mode = lambda mode: "agent" if mode == "agent" else "main"
+    app._update_task_state_after_result = lambda request, result: None
+    app._safety_state_for_result = lambda mode, result: "guarded" if mode == "agent" else "idle"
+    app._result_status_for_logging = lambda result: "ok"
+    app._resolve_mode = main_module.LocalPilotApp._resolve_mode.__get__(app, LocalPilotApp)
+
+    request = app.process_user_input("describe my screen", requested_mode="agent")
+
+    assert request["mode"] == "agent"
+    assert request["result"]["message"] == "agent"
+    request_events = [event for event in events if event[0] == "Request"]
+    assert request_events[0][2]["classified_mode"] == "agent"
+
+
+def test_gui_submit_text_uses_agent_mode_when_selected():
+    calls = []
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.input_mode_var = SimpleNamespace(get=lambda: "agent")
+    gui.app = SimpleNamespace(
+        process_user_input=lambda text, requested_mode=None: calls.append((text, requested_mode)) or {
+            "mode": "agent",
+            "result": {"ok": True, "message": "done", "transcript": []},
+        }
+    )
+    gui._append_chat_message = lambda *args, **kwargs: None
+    gui._remember_debug_image = lambda result: None
+    gui._render_agent_result = lambda result: calls.append(("render_agent", result["message"]))
+    gui._refresh_status_bar = lambda: None
+    gui._maybe_refresh_memory = lambda result: None
+
+    gui.submit_text("Describe my current screen briefly.")
+
+    assert calls[0] == ("Describe my current screen briefly.", "agent")
+    assert calls[1] == ("render_agent", "done")
+
+
+def test_gui_submit_text_keeps_old_route_when_auto_mode_selected():
+    calls = []
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.input_mode_var = SimpleNamespace(get=lambda: "auto")
+    gui.app = SimpleNamespace(
+        process_user_input=lambda text, requested_mode=None: calls.append((text, requested_mode)) or {
+            "mode": "chat",
+            "result": {"ok": True, "message": "done"},
+        }
+    )
+    gui._append_chat_message = lambda *args, **kwargs: None
+    gui._remember_debug_image = lambda result: None
+    gui._refresh_status_bar = lambda: None
+    gui._maybe_refresh_memory = lambda result: None
+
+    gui.submit_text("hello")
+
+    assert calls[0] == ("hello", None)
+
+
 def test_build_approval_window_keeps_buttons_visible_and_binds_shortcuts(monkeypatch):
     labels = []
     frames = []
