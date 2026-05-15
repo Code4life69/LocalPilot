@@ -4,13 +4,16 @@ from datetime import datetime
 from pathlib import Path
 
 
-def take_screenshot(output_dir: str) -> dict:
+DEFAULT_SCREENSHOT_DIR = Path("logs") / "screenshots"
+
+
+def take_screenshot(output_dir: str | Path | None = None) -> dict:
     try:
         import mss
     except ImportError as exc:
         return {"ok": False, "error": f"mss not installed: {exc}"}
 
-    folder = Path(output_dir)
+    folder = Path(output_dir) if output_dir is not None else DEFAULT_SCREENSHOT_DIR
     folder.mkdir(parents=True, exist_ok=True)
     filename = folder / f"screenshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
     session_factory = getattr(mss, "MSS", None) or getattr(mss, "mss", None)
@@ -19,6 +22,16 @@ def take_screenshot(output_dir: str) -> dict:
     with session_factory() as sct:
         sct.shot(output=str(filename))
     return {"ok": True, "path": str(filename)}
+
+
+def latest_screenshot(output_dir: str | Path | None = None) -> str | None:
+    folder = Path(output_dir) if output_dir is not None else DEFAULT_SCREENSHOT_DIR
+    if not folder.exists():
+        return None
+    screenshots = sorted(folder.glob("screenshot_*.png"), key=lambda item: item.stat().st_mtime, reverse=True)
+    if not screenshots:
+        return None
+    return str(screenshots[0])
 
 
 def get_mouse_position() -> dict:

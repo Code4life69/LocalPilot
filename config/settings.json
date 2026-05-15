@@ -16,6 +16,13 @@
     "auto_start_server": true,
     "startup_wait_seconds": 8
   },
+  "lmstudio": {
+    "host": "http://localhost:1234/v1",
+    "timeout_seconds": 90,
+    "text_model": "qwen2.5-coder-14b-instruct",
+    "vision_model": "qwen3-vl-8b-instruct",
+    "screenshot_dir": "logs/screenshots"
+  },
   "model_lifecycle": {
     "enabled": true,
     "unload_previous_heavy_role": true,

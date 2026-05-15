@@ -595,3 +595,29 @@ def test_main_starts_cli_thread_with_gui_when_enabled(monkeypatch):
     assert exit_code == 0
     assert thread_calls["created"] == 1
     assert thread_calls["started"] == 1
+
+
+def test_describe_lmstudio_screenshot_returns_description(monkeypatch, tmp_path):
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.root_dir = tmp_path
+    app.settings = {
+        "lmstudio": {
+            "vision_model": "qwen3-vl-8b-instruct",
+            "screenshot_dir": "logs/screenshots",
+        }
+    }
+    app.lmstudio = SimpleNamespace(
+        default_vision_model="qwen3-vl-8b-instruct",
+        chat_vision=lambda **kwargs: "A desktop with a browser open.",
+    )
+
+    screenshot_path = tmp_path / "logs" / "screenshots" / "shot.png"
+    screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+    screenshot_path.write_bytes(b"png")
+    monkeypatch.setattr(main_module, "take_screenshot", lambda _path: {"ok": True, "path": str(screenshot_path)})
+
+    report = app.describe_lmstudio_screenshot()
+
+    assert "LM Studio screenshot vision test" in report
+    assert str(screenshot_path) in report
+    assert "A desktop with a browser open." in report

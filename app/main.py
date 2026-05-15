@@ -16,6 +16,7 @@ from tkinter import scrolledtext, ttk
 from typing import Any
 
 from app.git_sync import GitSyncManager
+from app.lmstudio_client import LMStudioClient
 from app.llm.ollama_client import OllamaClient
 from app.llm.prompts import build_system_prompt
 from app.logger import AppLogger
@@ -29,6 +30,7 @@ from app.safety import SafetyManager
 from app.system_doctor import build_system_doctor_report
 from app.task_state import TaskStateStore
 from app.tools.desktop_lessons import DesktopLessonStore
+from app.tools.screen import take_screenshot
 from app.tools.test_runner import TestRunner
 
 
@@ -40,6 +42,13 @@ class LocalPilotApp:
         self.performance_profiles = self._load_json(self.root_dir / "config" / "performance_profiles.json")
         self.operating_profiles = self._load_json(self.root_dir / "config" / "operating_profiles.json")
         self.logger = AppLogger(self.root_dir / self.settings["logs_dir"])
+        lmstudio_settings = self.settings.get("lmstudio", {})
+        self.lmstudio = LMStudioClient(
+            host=lmstudio_settings.get("host", "http://localhost:1234/v1"),
+            timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 90)),
+            default_text_model=lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"),
+            default_vision_model=lmstudio_settings.get("vision_model", "qwen3-vl-8b-instruct"),
+        )
         self.git_sync = GitSyncManager(self.root_dir, self.settings, self.logger)
         self.memory = MemoryStore(
             self.root_dir / self.settings["memory_dir"],
@@ -235,6 +244,34 @@ class LocalPilotApp:
 
     def describe_vision_test(self) -> str:
         return self.ollama.build_vision_test_report()
+
+    def describe_lmstudio_screenshot(self) -> str:
+        lmstudio_settings = self.settings.get("lmstudio", {})
+        screenshot_dir = self.root_dir / lmstudio_settings.get("screenshot_dir", "logs/screenshots")
+        screenshot = take_screenshot(screenshot_dir)
+        lines = ["LM Studio screenshot vision test"]
+        if not screenshot.get("ok"):
+            lines.append(str(screenshot.get("error", "Screenshot capture failed.")))
+            return "\n".join(lines)
+
+        screenshot_path = screenshot["path"]
+        prompt = "Describe this screenshot in one sentence and mention any obvious visible text."
+        lines.append(f"- screenshot: {screenshot_path}")
+        lines.append(f"- model: {lmstudio_settings.get('vision_model', self.lmstudio.default_vision_model)}")
+        try:
+            description = self.lmstudio.chat_vision(
+                prompt=prompt,
+                image_path=screenshot_path,
+                model=lmstudio_settings.get("vision_model", self.lmstudio.default_vision_model),
+                max_tokens=512,
+            )
+        except Exception as exc:
+            lines.append(f"LM Studio vision failed: {exc}")
+            return "\n".join(lines)
+
+        lines.append(f"- prompt: {prompt}")
+        lines.append(f"- description: {description}")
+        return "\n".join(lines)
 
     def describe_system_doctor(self) -> str:
         return build_system_doctor_report(
@@ -1263,6 +1300,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Run a minimal vision probe and exit without starting the GUI.",
     )
     parser.add_argument(
+        "--lmstudio-vision-test",
+        action="store_true",
+        help="Take a real screenshot, send it to LM Studio vision, and print the description.",
+    )
+    parser.add_argument(
         "--system-doctor",
         action="store_true",
         help="Print dependency and runtime diagnostics and exit without starting the GUI.",
@@ -1298,6 +1340,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.vision_test:
         safe_console_print(app.describe_vision_test())
+        app.shutdown()
+        return 0
+
+    if args.lmstudio_vision_test:
+        safe_console_print(app.describe_lmstudio_screenshot())
         app.shutdown()
         return 0
 
