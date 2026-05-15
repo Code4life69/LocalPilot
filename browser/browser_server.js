@@ -4,7 +4,8 @@ const childProcess = require("child_process");
 
 const rootDir = path.resolve(__dirname, "..");
 const logsDir = path.join(rootDir, "logs", "browser");
-const statePath = path.join(__dirname, "browser_state.json");
+const runtimeDir = path.join(rootDir, "memory", "runtime");
+const statePath = path.join(runtimeDir, "browser_state.json");
 const latestScreenshotPath = path.join(logsDir, "latest.png");
 const DEFAULT_BROWSER_PATHS = [
   "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
@@ -54,6 +55,7 @@ function readState() {
 }
 
 function writeState(state) {
+  ensureDir(runtimeDir);
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2), "utf8");
 }
 
@@ -420,5 +422,6 @@ if (require.main === module) {
 module.exports = {
   DEFAULT_BROWSER_PATHS,
   discoverBrowserExecutable,
-  buildBrowserExecutableError
+  buildBrowserExecutableError,
+  STATE_PATH: statePath
 };

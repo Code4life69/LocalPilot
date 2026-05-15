@@ -16,6 +16,7 @@ from tkinter import scrolledtext, ttk
 from typing import Any
 
 from app.agent import LocalPilotAgent
+from app.checkpoints import CheckpointManager
 from app.git_sync import GitSyncManager
 from app.lmstudio_client import LMStudioClient
 from app.llm.ollama_client import OllamaClient
@@ -97,6 +98,10 @@ def run_agent_cli(root_dir: str | Path) -> int:
     root_path = Path(root_dir)
     settings = load_settings(root_path)
     logger = AppLogger(root_path / settings.get("logs_dir", "logs"))
+    memory = MemoryStore(
+        root_path / settings.get("memory_dir", "memory"),
+        root_path / "config" / "capabilities.json",
+    )
     lmstudio_settings = settings.get("lmstudio", {})
     lmstudio_client = LMStudioClient(
         host=lmstudio_settings.get("host", "http://localhost:1234/v1"),
@@ -105,16 +110,21 @@ def run_agent_cli(root_dir: str | Path) -> int:
         default_vision_model=lmstudio_settings.get("vision_model", "qwen3-vl-8b-instruct"),
     )
     safety = SafetyManager(workspace_root=root_path / "workspace")
+    checkpoints = CheckpointManager(root_path / settings.get("memory_dir", "memory") / "checkpoints")
     tool_registry = ToolRegistry(
         root_dir=root_path,
         safety=safety,
         logger=logger,
         lmstudio_client=lmstudio_client,
+        checkpoint_manager=checkpoints,
+        memory_store=memory,
     )
     agent = LocalPilotAgent(
         llm_client=lmstudio_client,
         tool_registry=tool_registry,
         planner_model=lmstudio_client.default_text_model,
+        memory_store=memory,
+        root_dir=root_path,
     )
 
     safe_console_print("LocalPilot Agent CLI")
@@ -195,16 +205,21 @@ class LocalPilotApp:
             approval_callback=self._approval_callback,
             workspace_root=self.root_dir / "workspace",
         )
+        self.checkpoints = CheckpointManager(self.root_dir / self.settings["memory_dir"] / "checkpoints")
         self.tool_registry = ToolRegistry(
             root_dir=self.root_dir,
             safety=self.safety,
             logger=self.logger,
             lmstudio_client=self.lmstudio,
+            checkpoint_manager=self.checkpoints,
+            memory_store=self.memory,
         )
         self.agent = LocalPilotAgent(
             llm_client=self.lmstudio,
             tool_registry=self.tool_registry,
             planner_model=self.lmstudio.default_text_model,
+            memory_store=self.memory,
+            root_dir=self.root_dir,
         )
         self.gui: LocalPilotGUI | None = None
         self._shutdown_complete = False
@@ -306,20 +321,32 @@ class LocalPilotApp:
         role = "GitSync" if ok else "GitSyncWarning"
         self.logger.event(role, message, persist=False, trigger=trigger)
 
-    def _approval_callback(self, prompt: str) -> bool:
-        self.logger.event("Safety", "Approval pending", prompt=prompt)
+    def _approval_callback(self, prompt: Any) -> bool:
+        prompt_text = self.safety.format_approval_request(prompt) if hasattr(self, "safety") else str(prompt)
+        extra = {"prompt": prompt_text}
+        if isinstance(prompt, dict):
+            extra.update(
+                {
+                    "approval_id": prompt.get("approval_id"),
+                    "risk": prompt.get("risk"),
+                    "summary": prompt.get("summary"),
+                    "tool_calls": prompt.get("tool_calls"),
+                }
+            )
+        self.logger.event("Safety", "Approval pending", **extra)
         if self.gui is not None:
             approved = self.gui.request_approval(prompt)
         else:
             approved = self._cli_approval(prompt)
-        self.logger.event("Safety", "Approval accepted" if approved else "Approval denied", prompt=prompt)
+        self.logger.event("Safety", "Approval accepted" if approved else "Approval denied", **extra)
         return approved
 
-    def _cli_approval(self, prompt: str) -> bool:
-        reply = input(f"{prompt}\nApprove? y/n: ").strip().lower()
+    def _cli_approval(self, prompt: Any) -> bool:
+        prompt_text = self.safety.format_approval_request(prompt) if hasattr(self, "safety") else str(prompt)
+        reply = input(f"{prompt_text}\nApprove? y/n: ").strip().lower()
         return reply == "y"
 
-    def ask_approval(self, prompt: str) -> bool:
+    def ask_approval(self, prompt: Any) -> bool:
         return self.safety.confirm(prompt)
 
     def describe_capabilities(self) -> str:
@@ -912,7 +939,7 @@ class LocalPilotGUI:
             self._refresh_status_bar()
         self.root.after(150, self._drain_events)
 
-    def request_approval(self, prompt: str) -> bool:
+    def request_approval(self, prompt: Any) -> bool:
         approved = {"value": False}
         done = threading.Event()
 
@@ -975,6 +1002,7 @@ class LocalPilotGUI:
         container.pack(fill="both", expand=True, padx=8, pady=8)
 
         actions = [
+            ("Refresh Memory", self._load_memory_panel),
             ("Show Notes", lambda: self.submit_text("show notes")),
             ("Take Screenshot", lambda: self.submit_text("take screenshot")),
             ("Mouse Position", lambda: self.submit_text("get mouse position")),
@@ -1085,15 +1113,41 @@ class LocalPilotGUI:
     def _load_memory_panel(self) -> None:
         if self.memory_text is None:
             return
-        content = self.app.memory.show_notes()
+        content = self._build_memory_panel_content()
         self.memory_text.configure(state="normal")
         self.memory_text.delete("1.0", tk.END)
         self.memory_text.insert(tk.END, content)
         self.memory_text.configure(state="disabled")
 
     def _maybe_refresh_memory(self, result: dict[str, Any]) -> None:
-        if any(key in result for key in ("content", "matches", "message")):
+        if any(key in result for key in ("content", "matches", "message", "session_path", "steps")):
             self._load_memory_panel()
+
+    def _build_memory_panel_content(self) -> str:
+        notes = self.app.memory.show_notes().strip()
+        sessions = self.app.memory.list_session_summaries(limit=6)
+        parts = [notes or "# LocalPilot Notes"]
+        parts.append("\nRecent Sessions\n")
+        if not sessions:
+            parts.append("No saved sessions yet.")
+            return "\n".join(parts)
+        for session in sessions:
+            parts.append(self._format_session_summary(session))
+        return "\n".join(parts)
+
+    def _format_session_summary(self, session: dict[str, Any]) -> str:
+        browser_actions = session.get("browser_actions", []) or []
+        files_changed = session.get("files_changed", []) or []
+        errors = session.get("errors", []) or []
+        lines = [
+            f"- [{session.get('session_id', '')}] {session.get('user_task', '')}",
+            f"  status: {session.get('status', 'unknown')}",
+            f"  final: {session.get('final_answer', '') or '(no final answer recorded)'}",
+            f"  files changed: {len(files_changed)}",
+            f"  browser actions: {len(browser_actions)}",
+            f"  errors: {len(errors)}",
+        ]
+        return "\n".join(lines)
 
     def _remember_debug_image(self, result: dict[str, Any]) -> None:
         if not isinstance(result, dict):
@@ -1147,12 +1201,14 @@ class LocalPilotGUI:
         )
         self._append_readonly(self.logs, "Recent logs will appear here as the session runs.\n")
 
-    def _build_approval_window(self, prompt: str, approved: dict[str, bool], done: threading.Event) -> tk.Toplevel:
+    def _build_approval_window(self, prompt: Any, approved: dict[str, bool], done: threading.Event) -> tk.Toplevel:
         if self.approval_window is not None and self.approval_window.winfo_exists():
             try:
                 self.approval_window.destroy()
             except tk.TclError:
                 pass
+        app = getattr(self, "app", None)
+        prompt_text = app.safety.format_approval_request(prompt) if app is not None and hasattr(app, "safety") else str(prompt)
 
         dialog = tk.Toplevel(self.root)
         dialog.title("LocalPilot Approval")
@@ -1208,7 +1264,7 @@ class LocalPilotGUI:
             pady=12,
         )
         body.grid(row=2, column=0, sticky="ew", padx=20)
-        body.insert("1.0", prompt)
+        body.insert("1.0", prompt_text)
         body.configure(state="disabled")
 
         button_row = tk.Frame(dialog, bg=self.colors["panel"])

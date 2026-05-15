@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,8 @@ class MemoryStore:
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.notes_path = self.memory_dir / "notes.md"
         self.facts_path = self.memory_dir / "learned_facts.json"
+        self.sessions_dir = self.memory_dir / "sessions"
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.capability_manifest_path = Path(capability_manifest_path)
         if not self.notes_path.exists():
             self.notes_path.write_text("# LocalPilot Notes\n\n", encoding="utf-8")
@@ -63,3 +66,76 @@ class MemoryStore:
             json.dump(facts, handle, indent=2)
             handle.write("\n")
         return f"Saved fact: {key}"
+
+    def save_session(self, record: dict[str, Any]) -> str:
+        task_id = str(record.get("task_id") or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+        timestamp = str(record.get("start_time") or datetime.now().isoformat(timespec="seconds")).replace(":", "-")
+        session_path = self.sessions_dir / f"{timestamp}_{task_id}.json"
+        with session_path.open("w", encoding="utf-8") as handle:
+            json.dump(record, handle, indent=2, ensure_ascii=True)
+            handle.write("\n")
+        return str(session_path)
+
+    def recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+        sessions: list[dict[str, Any]] = []
+        for session_path in sorted(self.sessions_dir.glob("*.json"), reverse=True)[: max(limit, 1)]:
+            try:
+                data = json.loads(session_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict):
+                sessions.append(data)
+        return sessions
+
+    def list_session_summaries(self, limit: int = 10) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for session_path in sorted(self.sessions_dir.glob("*.json"), reverse=True)[: max(limit, 1)]:
+            try:
+                data = json.loads(session_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            summaries.append(
+                {
+                    "session_id": session_path.stem,
+                    "task_id": data.get("task_id"),
+                    "start_time": data.get("start_time"),
+                    "end_time": data.get("end_time"),
+                    "status": data.get("status"),
+                    "user_task": data.get("user_task"),
+                    "final_answer": data.get("final_answer"),
+                    "files_changed": data.get("files_changed", []),
+                    "browser_actions": data.get("browser_actions", []),
+                    "errors": data.get("errors", []),
+                    "session_path": str(session_path),
+                }
+            )
+        return summaries
+
+    def read_session(self, session_id: str) -> dict[str, Any] | None:
+        needle = session_id.strip()
+        if not needle:
+            return None
+        direct_path = self.sessions_dir / f"{needle}.json"
+        if direct_path.exists():
+            try:
+                data = json.loads(direct_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                return None
+            if isinstance(data, dict):
+                data.setdefault("session_id", direct_path.stem)
+                data.setdefault("session_path", str(direct_path))
+                return data
+        for session_path in sorted(self.sessions_dir.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(session_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("task_id") == needle or session_path.stem == needle:
+                data.setdefault("session_id", session_path.stem)
+                data.setdefault("session_path", str(session_path))
+                return data
+        return None

@@ -425,6 +425,47 @@ def test_gui_submit_text_keeps_old_route_when_auto_mode_selected():
     assert calls[0] == ("hello", None)
 
 
+def test_load_memory_panel_includes_recent_sessions():
+    class FakeText:
+        def __init__(self):
+            self.value = ""
+            self.states = []
+
+        def configure(self, **kwargs):
+            self.states.append(kwargs.get("state"))
+
+        def delete(self, *_args):
+            self.value = ""
+
+        def insert(self, *_args):
+            self.value += _args[1]
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.app = SimpleNamespace(
+        memory=SimpleNamespace(
+            show_notes=lambda: "# LocalPilot Notes\n\n- saved note",
+            list_session_summaries=lambda limit=6: [
+                {
+                    "session_id": "2026_demo",
+                    "user_task": "describe my screen",
+                    "status": "final",
+                    "final_answer": "The screen is visible.",
+                    "files_changed": ["C:\\LocalPilot\\workspace\\demo.py"],
+                    "browser_actions": [{"tool": "browser_search", "args": {"query": "cats"}}],
+                    "errors": [],
+                }
+            ],
+        )
+    )
+    gui.memory_text = FakeText()
+
+    gui._load_memory_panel()
+
+    assert "Recent Sessions" in gui.memory_text.value
+    assert "describe my screen" in gui.memory_text.value
+    assert "The screen is visible." in gui.memory_text.value
+
+
 def test_build_approval_window_keeps_buttons_visible_and_binds_shortcuts(monkeypatch):
     labels = []
     frames = []

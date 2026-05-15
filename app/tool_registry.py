@@ -2,20 +2,32 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from app.checkpoints import CheckpointManager
 from app.browser_tool import BrowserToolBridge
 from app.lmstudio_client import LMStudioClient
 from app.logger import AppLogger
-from app.safety import RISK_BLOCKED, SafetyDecision, SafetyManager
+from app.memory import MemoryStore
+from app.safety import RISK_BLOCKED, RISK_DANGEROUS, RISK_MEDIUM, SafetyDecision, SafetyManager
 from app.tools.files import list_folder, read_file, write_file
 from app.tools.screen import take_screenshot
 
 
 ToolHandler = Callable[[dict[str, Any]], dict[str, Any]]
+GROUPABLE_APPROVAL_TOOLS = {
+    "browser_launch",
+    "browser_goto",
+    "browser_search",
+    "browser_click_selector",
+    "browser_type_selector",
+    "browser_press_key",
+}
+INTERNAL_ARG_KEYS = {"task_id", "tool_call_id"}
 
 
 @dataclass(slots=True)
@@ -36,6 +48,8 @@ class ToolRegistry:
         logger: AppLogger | None = None,
         lmstudio_client: LMStudioClient | None = None,
         browser_bridge: BrowserToolBridge | None = None,
+        checkpoint_manager: CheckpointManager | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self.root_dir = Path(root_dir).resolve()
         self.workspace_root = (self.root_dir / "workspace").resolve()
@@ -47,6 +61,9 @@ class ToolRegistry:
         self.logger = logger
         self.lmstudio_client = lmstudio_client or LMStudioClient()
         self.browser_bridge = browser_bridge or BrowserToolBridge(self.root_dir)
+        self.checkpoint_manager = checkpoint_manager or CheckpointManager(self.root_dir / "memory" / "checkpoints")
+        self.memory_store = memory_store or MemoryStore(self.root_dir / "memory", self.root_dir / "config" / "capabilities.json")
+        self._approved_plans: dict[str, dict[str, Any]] = {}
         self._tools: dict[str, ToolDefinition] = {}
         self._register_builtin_tools()
 
@@ -142,6 +159,54 @@ class ToolRegistry:
                 risk_level="safe",
                 approval_required=False,
                 handler=self._handle_ask_user_approval,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="list_checkpoints",
+                description="List saved file checkpoints and the files they can restore.",
+                argument_schema={"type": "object", "properties": {"limit": {"type": "integer"}}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_list_checkpoints,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="restore_checkpoint",
+                description="Restore files from a saved checkpoint.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {"checkpoint_id": {"type": "string"}},
+                    "required": ["checkpoint_id"],
+                },
+                risk_level="dangerous",
+                approval_required=True,
+                handler=self._handle_restore_checkpoint,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="list_sessions",
+                description="List recent saved agent sessions.",
+                argument_schema={"type": "object", "properties": {"limit": {"type": "integer"}}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_list_sessions,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="read_session",
+                description="Read a saved agent session by session id or task id.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {"session_id": {"type": "string"}},
+                    "required": ["session_id"],
+                },
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_read_session,
             )
         )
         self.register(
@@ -274,51 +339,172 @@ class ToolRegistry:
     def execute_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(tool_call.get("tool", "")).strip()
         args = tool_call.get("args") or {}
+        execution_args = dict(args) if isinstance(args, dict) else args
+        if isinstance(execution_args, dict):
+            if tool_call.get("task_id") and "task_id" not in execution_args:
+                execution_args["task_id"] = tool_call.get("task_id")
+            if tool_call.get("tool_call_id") and "tool_call_id" not in execution_args:
+                execution_args["tool_call_id"] = tool_call.get("tool_call_id")
         reason = str(tool_call.get("reason", "")).strip()
         tool = self.get(tool_name)
         if tool is None:
             result = {"ok": False, "tool": tool_name or "(missing)", "error": f"Unknown tool: {tool_name}"}
             self._log_tool_event(tool_name or "(missing)", args, None, False, None, result, reason)
             return result
-        if not isinstance(args, dict):
+        if not isinstance(execution_args, dict):
             result = {"ok": False, "tool": tool_name, "error": "Tool args must be a JSON object."}
             self._log_tool_event(tool_name, args, None, False, None, result, reason)
             return result
 
-        decision = self.safety.classify_tool_call(tool_name, args)
+        decision = self.safety.classify_tool_call(tool_name, execution_args)
         if not decision.allowed or decision.risk_level == RISK_BLOCKED:
             result = {"ok": False, "tool": tool_name, "error": decision.reason}
             self._log_tool_event(tool_name, args, decision, False, None, result, reason)
             return result
 
         approval_result: bool | None = None
-        if decision.approval_required:
-            prompt = self._build_approval_prompt(tool_name, args, reason, decision)
-            approval_result = self.safety.confirm(prompt)
+        approval_request: dict[str, Any] | None = None
+        cached_approval = self._consume_matching_approval_plan(tool_name, execution_args)
+        if cached_approval is not None:
+            approval_result = True
+            approval_request = {**cached_approval, "granted": True, "reused": True}
+        elif decision.approval_required:
+            approval_request = self.build_approval_request(
+                tool_name,
+                execution_args,
+                reason,
+                decision,
+                tool_call.get("approval_plan"),
+            )
+            approval_result = self.safety.confirm(approval_request)
             if not approval_result:
-                result = {"ok": False, "tool": tool_name, "error": "User denied approval."}
+                result = {
+                    "ok": False,
+                    "tool": tool_name,
+                    "error": "User denied approval.",
+                    "approval": {**approval_request, "granted": False},
+                }
                 self._log_tool_event(tool_name, args, decision, True, approval_result, result, reason)
                 return result
+            if approval_request.get("type") == "approval_plan":
+                self._activate_approval_plan(approval_request, tool_name, execution_args)
 
         try:
-            raw_result = tool.handler(args)
+            raw_result = tool.handler(execution_args)
             if raw_result.get("ok"):
                 result = {"ok": True, "tool": tool_name, "result": {k: v for k, v in raw_result.items() if k != "ok"}}
             else:
                 result = {"ok": False, "tool": tool_name, "error": raw_result.get("error", "Tool failed.")}
         except Exception as exc:
             result = {"ok": False, "tool": tool_name, "error": str(exc)}
+        if approval_request is not None:
+            result["approval"] = {**approval_request, "granted": bool(approval_result)}
 
         self._log_tool_event(tool_name, args, decision, decision.approval_required, approval_result, result, reason)
         return result
 
-    def _build_approval_prompt(self, tool_name: str, args: dict[str, Any], reason: str, decision: SafetyDecision) -> str:
-        return (
-            f"Approve tool `{tool_name}`?\n"
-            f"Risk: {decision.risk_level}\n"
-            f"Reason: {reason or 'No reason provided.'}\n"
-            f"Args: {json.dumps(args, ensure_ascii=True)}"
-        )
+    def build_approval_request(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        reason: str,
+        decision: SafetyDecision,
+        proposed_plan: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        grouped = self._build_grouped_approval_request(tool_name, args, reason, proposed_plan)
+        if grouped is not None:
+            return grouped
+        summary = f"The agent wants to run `{tool_name}`."
+        affected_files: list[str] = []
+        if tool_name == "restore_checkpoint":
+            checkpoint = self.checkpoint_manager.get_checkpoint(str(args.get("checkpoint_id", "")))
+            if checkpoint is not None:
+                affected_files = [str(entry.get("original_path")) for entry in checkpoint.get("files", []) if entry.get("original_path")]
+                summary = f"Restore checkpoint `{args.get('checkpoint_id', '')}` for {len(affected_files)} file(s)."
+        request = {
+            "approval_id": uuid.uuid4().hex[:12],
+            "type": "approval_request",
+            "risk": decision.risk_level,
+            "summary": summary,
+            "reason": reason or "No reason provided.",
+            "tool_calls": [{"tool": tool_name, "args": self._public_args(args)}],
+        }
+        if affected_files:
+            request["affected_files"] = affected_files
+        return request
+
+    def _build_grouped_approval_request(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        reason: str,
+        proposed_plan: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(proposed_plan, dict):
+            return None
+        tool_calls = proposed_plan.get("tool_calls")
+        if not isinstance(tool_calls, list) or not tool_calls:
+            return None
+        normalized_calls: list[dict[str, Any]] = []
+        for index, call in enumerate(tool_calls):
+            if not isinstance(call, dict):
+                return None
+            plan_tool = str(call.get("tool", "")).strip()
+            plan_args = call.get("args") or {}
+            if not plan_tool or not isinstance(plan_args, dict):
+                return None
+            if plan_tool not in GROUPABLE_APPROVAL_TOOLS:
+                return None
+            decision = self.safety.classify_tool_call(plan_tool, plan_args)
+            if not decision.allowed or decision.risk_level != RISK_MEDIUM or not decision.approval_required:
+                return None
+            normalized_call = {"tool": plan_tool, "args": plan_args}
+            normalized_calls.append(normalized_call)
+            if index == 0 and not self._tool_call_matches(plan_tool, plan_args, tool_name, self._public_args(args)):
+                return None
+        return {
+            "approval_id": str(proposed_plan.get("approval_id") or uuid.uuid4().hex[:12]),
+            "type": "approval_plan",
+            "risk": RISK_MEDIUM,
+            "summary": str(proposed_plan.get("summary") or f"Allow this browser plan for `{tool_name}`?"),
+            "reason": str(proposed_plan.get("reason") or reason or "No reason provided."),
+            "tool_calls": normalized_calls,
+        }
+
+    def _activate_approval_plan(self, approval_request: dict[str, Any], current_tool_name: str, current_args: dict[str, Any]) -> None:
+        remaining_signatures = [
+            self._tool_signature(call["tool"], call["args"])
+            for call in approval_request.get("tool_calls", [])
+            if not self._tool_call_matches(call["tool"], call["args"], current_tool_name, self._public_args(current_args))
+        ]
+        self._approved_plans[str(approval_request["approval_id"])] = {
+            "approval": approval_request,
+            "remaining_signatures": remaining_signatures,
+        }
+
+    def _consume_matching_approval_plan(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any] | None:
+        signature = self._tool_signature(tool_name, self._public_args(args))
+        for approval_id in list(self._approved_plans):
+            cached = self._approved_plans[approval_id]
+            remaining = cached.get("remaining_signatures", [])
+            if remaining and remaining[0] == signature:
+                cached["remaining_signatures"] = remaining[1:]
+                approval = dict(cached["approval"])
+                if not cached["remaining_signatures"]:
+                    self._approved_plans.pop(approval_id, None)
+                return approval
+            if not remaining:
+                self._approved_plans.pop(approval_id, None)
+        return None
+
+    def _tool_signature(self, tool_name: str, args: dict[str, Any]) -> str:
+        return json.dumps({"tool": tool_name, "args": args}, sort_keys=True, ensure_ascii=True)
+
+    def _tool_call_matches(self, left_tool: str, left_args: dict[str, Any], right_tool: str, right_args: dict[str, Any]) -> bool:
+        return self._tool_signature(left_tool, left_args) == self._tool_signature(right_tool, right_args)
+
+    def _public_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in args.items() if key not in INTERNAL_ARG_KEYS}
 
     def _log_tool_event(
         self,
@@ -338,6 +524,10 @@ class ToolRegistry:
             "risk_level": decision.risk_level if decision else "unknown",
             "approval_required": approval_required,
             "approval_result": approval_result,
+            "approval_id": (result.get("approval") or {}).get("approval_id") if isinstance(result, dict) else None,
+            "approval_type": (result.get("approval") or {}).get("type") if isinstance(result, dict) else None,
+            "approval_summary": (result.get("approval") or {}).get("summary") if isinstance(result, dict) else None,
+            "affected_files": ((result.get("result") or {}).get("restored_files") if isinstance(result, dict) else None),
             "ok": bool(result.get("ok")),
             "error": result.get("error"),
         }
@@ -363,7 +553,18 @@ class ToolRegistry:
         return read_file(str(self._resolve_user_path(str(args["path"]))))
 
     def _handle_write_file(self, args: dict[str, Any]) -> dict[str, Any]:
-        return write_file(str(self._resolve_user_path(str(args["path"]))), str(args["content"]))
+        path = self._resolve_user_path(str(args["path"]))
+        checkpoint = self.checkpoint_manager.create_file_checkpoint(
+            path,
+            task_id=str(args.get("task_id") or "") or None,
+            tool_call_id=str(args.get("tool_call_id") or "") or None,
+        )
+        result = write_file(str(path), str(args["content"]))
+        if result.get("ok"):
+            result["checkpoint_id"] = checkpoint["checkpoint_id"]
+            result["checkpoint_manifest_path"] = checkpoint["manifest_path"]
+            result["file_existed_before"] = checkpoint["file_existed_before"]
+        return result
 
     def _handle_run_command(self, args: dict[str, Any]) -> dict[str, Any]:
         cwd_value = args.get("cwd")
@@ -389,6 +590,42 @@ class ToolRegistry:
     def _handle_take_screenshot(self, args: dict[str, Any]) -> dict[str, Any]:
         screenshots_dir = self.logs_dir / "screenshots"
         return take_screenshot(screenshots_dir)
+
+    def _handle_list_checkpoints(self, args: dict[str, Any]) -> dict[str, Any]:
+        limit = max(int(args.get("limit", 20)), 1)
+        manifests = self.checkpoint_manager.list_checkpoints()[:limit]
+        checkpoints = [
+            {
+                "checkpoint_id": manifest.get("checkpoint_id"),
+                "timestamp": manifest.get("timestamp"),
+                "task_id": manifest.get("task_id"),
+                "tool_call_id": manifest.get("tool_call_id"),
+                "files": [entry.get("original_path") for entry in manifest.get("files", [])],
+            }
+            for manifest in manifests
+        ]
+        return {"ok": True, "checkpoints": checkpoints}
+
+    def _handle_restore_checkpoint(self, args: dict[str, Any]) -> dict[str, Any]:
+        checkpoint_id = str(args["checkpoint_id"])
+        restored = self.checkpoint_manager.restore_checkpoint(checkpoint_id)
+        if not restored.get("ok"):
+            return restored
+        return {
+            "ok": True,
+            "checkpoint_id": checkpoint_id,
+            "restored_files": restored.get("restored_paths", []),
+        }
+
+    def _handle_list_sessions(self, args: dict[str, Any]) -> dict[str, Any]:
+        limit = max(int(args.get("limit", 10)), 1)
+        return {"ok": True, "sessions": self.memory_store.list_session_summaries(limit=limit)}
+
+    def _handle_read_session(self, args: dict[str, Any]) -> dict[str, Any]:
+        session = self.memory_store.read_session(str(args["session_id"]))
+        if session is None:
+            return {"ok": False, "error": f"Session not found: {args['session_id']}"}
+        return {"ok": True, "session": session}
 
     def _handle_analyze_screenshot(self, args: dict[str, Any]) -> dict[str, Any]:
         path = self._resolve_user_path(str(args["path"])) if not Path(str(args["path"])).is_absolute() else Path(str(args["path"])).resolve()

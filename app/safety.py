@@ -138,8 +138,11 @@ class SafetyManager:
         payload = dict(args or {})
         path_value = payload.get("path") or payload.get("cwd") or payload.get("target")
 
-        if tool_name in {"take_screenshot", "analyze_screenshot", "ask_user_approval"}:
+        if tool_name in {"take_screenshot", "analyze_screenshot", "ask_user_approval", "list_checkpoints", "list_sessions", "read_session"}:
             return SafetyDecision(RISK_SAFE, False, True, "Read-only observation tool.")
+
+        if tool_name == "restore_checkpoint":
+            return SafetyDecision(RISK_DANGEROUS, True, True, "Restoring a checkpoint modifies files and requires approval.")
 
         if tool_name in {"list_files", "read_file"}:
             if path_value is None or self.is_path_within_workspace(path_value):
@@ -177,8 +180,35 @@ class SafetyManager:
 
         return SafetyDecision(RISK_BLOCKED, False, False, f"Unknown tool for safety classification: {tool_name}")
 
-    def confirm(self, prompt: str) -> bool:
+    def format_approval_request(self, prompt: Any) -> str:
+        if isinstance(prompt, str):
+            return prompt
+        if isinstance(prompt, dict):
+            tool_calls = prompt.get("tool_calls") or []
+            is_plan = prompt.get("type") == "approval_plan"
+            lines = ["Allow this browser plan?" if is_plan else "Approval requested."]
+            lines.append(str(prompt.get("summary") or "Approval requested."))
+            lines.append(f"Risk: {prompt.get('risk', 'unknown')}")
+            if tool_calls and is_plan:
+                lines.append("Planned tool calls:")
+                for call in tool_calls:
+                    lines.append(f"- {call.get('tool', 'unknown')} {call.get('args', {})}")
+            elif tool_calls:
+                first_call = tool_calls[0]
+                lines.append(f"Tool: {first_call.get('tool', 'unknown')}")
+                lines.append(f"Args: {first_call.get('args', {})}")
+            affected_files = prompt.get("affected_files") or []
+            if affected_files:
+                lines.append("Affected files:")
+                for path in affected_files:
+                    lines.append(f"- {path}")
+            if prompt.get("reason"):
+                lines.append(f"Reason: {prompt['reason']}")
+            return "\n".join(lines)
+        return str(prompt)
+
+    def confirm(self, prompt: Any) -> bool:
         if self.approval_callback is None:
-            reply = input(f"{prompt} Approve? y/n: ").strip().lower()
+            reply = input(f"{self.format_approval_request(prompt)}\nApprove? y/n: ").strip().lower()
             return reply == "y"
         return bool(self.approval_callback(prompt))

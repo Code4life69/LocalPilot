@@ -14,10 +14,15 @@ class AgentMode:
             "status": result.get("status", "error"),
             "message": result.get("message", ""),
             "transcript": result.get("transcript", []),
+            "steps": result.get("steps", []),
             "brain_model": self.app.lmstudio.default_text_model,
             "vision_model": self.app.lmstudio.default_vision_model,
             "browser_backend": "Puppeteer",
         }
         if result.get("error"):
             payload["error"] = result["error"]
+        if result.get("session_path"):
+            payload["session_path"] = result["session_path"]
+        if result.get("task_id"):
+            payload["task_id"] = result["task_id"]
         return payload

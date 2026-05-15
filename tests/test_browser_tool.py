@@ -97,3 +97,17 @@ def test_browser_server_reports_clean_error_when_no_executable_found():
     assert result["action"] == "launch_browser"
     assert "LOCALPILOT_BROWSER_EXECUTABLE" in result["error"]
     assert result["checked_paths"] == ["Z:/missing/chrome.exe"]
+
+
+def test_browser_server_state_path_uses_runtime_memory_location():
+    script = Path("browser/browser_server.js").resolve()
+    command = (
+        f"const mod=require({json.dumps(str(script))});"
+        "console.log(JSON.stringify({state_path: mod.STATE_PATH}));"
+    )
+    completed = subprocess.run(["node", "-e", command], capture_output=True, text=True, check=True)
+    result = json.loads(completed.stdout)
+
+    assert "memory" in result["state_path"].lower()
+    assert "runtime" in result["state_path"].lower()
+    assert result["state_path"].lower().endswith("browser_state.json")

@@ -4,3 +4,10 @@
 - Python is only the tool harness, safety layer, executor, logger, and bridge.
 - The AI must make the plan and choose tools.
 - For websites, prefer Puppeteer-controlled browser tools before desktop mouse tools.
+- Prefer Qwen3-VL for screenshot and visual analysis tasks.
+- Require approval for risky actions and never auto-approve dangerous actions.
+- Never fake tool success or hide real errors.
+- Prefer grouped approval for obvious multi-step browser tasks.
+- Never group dangerous actions into a shared approval plan.
+- Always expose checkpoint or undo information after file edits.
+- Use memory and session tools when the user asks what happened previously.

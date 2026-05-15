@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from app.browser_tool import BrowserToolBridge
@@ -60,6 +61,10 @@ def test_tool_registry_registers_expected_builtin_tools(tmp_path):
         "take_screenshot",
         "analyze_screenshot",
         "ask_user_approval",
+        "list_checkpoints",
+        "restore_checkpoint",
+        "list_sessions",
+        "read_session",
         "browser_launch",
         "browser_close",
         "browser_goto",
@@ -103,7 +108,8 @@ def test_registry_requires_approval_for_risky_write(tmp_path):
 
     assert result["ok"] is False
     assert result["error"] == "User denied approval."
-    assert prompts
+    assert prompts[0]["risk"] == "medium"
+    assert prompts[0]["tool_calls"][0]["tool"] == "write_file"
 
 
 def test_registry_analyze_screenshot_uses_lmstudio_vision_client(tmp_path):
@@ -166,4 +172,255 @@ def test_browser_click_requires_approval(tmp_path):
 
     assert result["ok"] is False
     assert result["error"] == "User denied approval."
-    assert prompts
+    assert prompts[0]["tool_calls"][0]["tool"] == "browser_click_selector"
+
+
+def test_write_file_creates_checkpoint_and_returns_checkpoint_id(tmp_path):
+    registry, _root_dir, workspace, _vision, _browser = build_registry(tmp_path)
+    target = workspace / "note.txt"
+    target.write_text("before", encoding="utf-8")
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "write_file",
+            "args": {"path": "note.txt", "content": "after"},
+            "reason": "update note",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["checkpoint_id"]
+    manifest_path = Path(result["result"]["checkpoint_manifest_path"])
+    assert manifest_path.exists()
+
+
+def test_checkpoint_manifest_records_original_file_state(tmp_path):
+    registry, _root_dir, workspace, _vision, _browser = build_registry(tmp_path)
+    target = workspace / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "write_file",
+            "args": {"path": "demo.txt", "content": "after"},
+            "reason": "update demo file",
+        }
+    )
+
+    manifest = json.loads(Path(result["result"]["checkpoint_manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["checkpoint_id"] == result["result"]["checkpoint_id"]
+    assert manifest["files"][0]["original_path"] == str(target.resolve())
+    assert manifest["files"][0]["file_existed_before"] is True
+
+
+def test_denied_approval_returns_structured_approval_payload(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: False)
+
+    result = registry.execute_tool_call(
+        {"tool": "browser_search", "args": {"query": "cats"}, "reason": "search the web"}
+    )
+
+    assert result["ok"] is False
+    assert result["approval"]["granted"] is False
+    assert result["approval"]["risk"] == "medium"
+
+
+def test_approval_summary_includes_risk_tool_and_args(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+    decision = registry.safety.classify_tool_call("browser_goto", {"url": "https://example.com"})
+
+    approval = registry.build_approval_request(
+        "browser_goto",
+        {"url": "https://example.com"},
+        "Need to open the requested website.",
+        decision,
+    )
+    rendered = registry.safety.format_approval_request(approval)
+
+    assert approval["risk"] == "medium"
+    assert approval["tool_calls"][0]["tool"] == "browser_goto"
+    assert "browser_goto" in rendered
+    assert "https://example.com" in rendered
+
+
+def test_list_checkpoints_tool_returns_structured_result(tmp_path):
+    registry, _root_dir, workspace, _vision, _browser = build_registry(tmp_path)
+    (workspace / "demo.txt").write_text("before", encoding="utf-8")
+    write_result = registry.execute_tool_call(
+        {"tool": "write_file", "args": {"path": "demo.txt", "content": "after"}, "reason": "update demo"}
+    )
+
+    result = registry.execute_tool_call({"tool": "list_checkpoints", "args": {}, "reason": "inspect checkpoints"})
+
+    assert result["ok"] is True
+    assert result["tool"] == "list_checkpoints"
+    assert result["result"]["checkpoints"][0]["checkpoint_id"] == write_result["result"]["checkpoint_id"]
+
+
+def test_restore_checkpoint_requires_approval(tmp_path):
+    prompts = []
+    registry, _root_dir, workspace, _vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: prompts.append(prompt) or False)
+    target = workspace / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+    checkpoint = registry.checkpoint_manager.create_file_checkpoint(target)
+
+    result = registry.execute_tool_call(
+        {"tool": "restore_checkpoint", "args": {"checkpoint_id": checkpoint["checkpoint_id"]}, "reason": "undo the edit"}
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "User denied approval."
+    assert prompts[0]["type"] == "approval_request"
+    assert prompts[0]["risk"] == "dangerous"
+
+
+def test_restore_checkpoint_returns_structured_result(tmp_path):
+    registry, _root_dir, workspace, _vision, _browser = build_registry(tmp_path)
+    target = workspace / "demo.txt"
+    target.write_text("before", encoding="utf-8")
+    checkpoint = registry.checkpoint_manager.create_file_checkpoint(target)
+    target.write_text("after", encoding="utf-8")
+
+    result = registry.execute_tool_call(
+        {"tool": "restore_checkpoint", "args": {"checkpoint_id": checkpoint["checkpoint_id"]}, "reason": "undo the edit"}
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["checkpoint_id"] == checkpoint["checkpoint_id"]
+    assert str(target) in result["result"]["restored_files"]
+    assert target.read_text(encoding="utf-8") == "before"
+
+
+def test_list_sessions_tool_returns_saved_sessions(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+    registry.memory_store.save_session(
+        {
+            "task_id": "task123",
+            "user_task": "describe my screen",
+            "mode": "agent",
+            "start_time": "2026-05-15T17:30:00",
+            "end_time": "2026-05-15T17:30:01",
+            "status": "final",
+            "final_answer": "done",
+            "browser_actions": [],
+            "files_changed": [],
+            "errors": [],
+        }
+    )
+
+    result = registry.execute_tool_call({"tool": "list_sessions", "args": {}, "reason": "inspect recent sessions"})
+
+    assert result["ok"] is True
+    assert result["result"]["sessions"][0]["task_id"] == "task123"
+
+
+def test_read_session_tool_returns_saved_session(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+    session_path = registry.memory_store.save_session(
+        {
+            "task_id": "task123",
+            "user_task": "describe my screen",
+            "mode": "agent",
+            "start_time": "2026-05-15T17:30:00",
+            "end_time": "2026-05-15T17:30:01",
+            "status": "final",
+            "final_answer": "done",
+            "browser_actions": [],
+            "files_changed": [],
+            "errors": [],
+        }
+    )
+
+    result = registry.execute_tool_call(
+        {"tool": "read_session", "args": {"session_id": Path(session_path).stem}, "reason": "inspect prior session"}
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["session"]["task_id"] == "task123"
+
+
+def test_grouped_approval_plan_is_structured_and_reused(tmp_path):
+    prompts = []
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: prompts.append(prompt) or True)
+    approval_plan = {
+        "type": "approval_plan",
+        "summary": "Open Google and search cats.",
+        "tool_calls": [
+            {"tool": "browser_launch", "args": {}},
+            {"tool": "browser_goto", "args": {"url": "https://www.google.com"}},
+            {"tool": "browser_search", "args": {"query": "cats"}},
+        ],
+    }
+
+    first = registry.execute_tool_call(
+        {
+            "tool": "browser_launch",
+            "args": {},
+            "reason": "Start a visible browser session.",
+            "approval_plan": approval_plan,
+        }
+    )
+    second = registry.execute_tool_call(
+        {"tool": "browser_goto", "args": {"url": "https://www.google.com"}, "reason": "Open Google."}
+    )
+    third = registry.execute_tool_call(
+        {"tool": "browser_search", "args": {"query": "cats"}, "reason": "Search for cats."}
+    )
+
+    assert first["ok"] is True
+    assert first["approval"]["type"] == "approval_plan"
+    assert second["ok"] is True
+    assert third["ok"] is True
+    assert prompts[0]["type"] == "approval_plan"
+    assert len(prompts) == 1
+
+
+def test_dangerous_actions_cannot_be_grouped(tmp_path):
+    prompts = []
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: prompts.append(prompt) or True)
+    approval_plan = {
+        "type": "approval_plan",
+        "summary": "Search and type a password.",
+        "tool_calls": [
+            {"tool": "browser_click_selector", "args": {"selector": "#password"}},
+            {"tool": "browser_search", "args": {"query": "cats"}},
+        ],
+    }
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "browser_click_selector",
+            "args": {"selector": "#password"},
+            "reason": "Interact with a password field.",
+            "approval_plan": approval_plan,
+        }
+    )
+
+    assert result["ok"] is True
+    assert prompts[0]["type"] == "approval_request"
+    assert prompts[0]["risk"] == "dangerous"
+
+
+def test_denied_approval_plan_returns_structured_result(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: False)
+    approval_plan = {
+        "type": "approval_plan",
+        "summary": "Open Google and search cats.",
+        "tool_calls": [
+            {"tool": "browser_launch", "args": {}},
+            {"tool": "browser_goto", "args": {"url": "https://www.google.com"}},
+        ],
+    }
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "browser_launch",
+            "args": {},
+            "reason": "Start a browser session.",
+            "approval_plan": approval_plan,
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["approval"]["type"] == "approval_plan"
+    assert result["approval"]["granted"] is False
