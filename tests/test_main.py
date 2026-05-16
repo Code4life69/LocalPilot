@@ -1,3 +1,4 @@
+import queue
 from pathlib import Path
 from types import SimpleNamespace
 import builtins
@@ -411,26 +412,74 @@ def test_process_user_input_respects_requested_agent_mode():
     assert request_events[0][2]["classified_mode"] == "agent"
 
 
-def test_gui_submit_text_uses_agent_mode_when_selected():
+def test_gui_submit_text_uses_agent_mode_when_selected(monkeypatch):
     calls = []
+    threads = []
+
+    class FakeVar:
+        def __init__(self, value=""):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class FakeStateWidget:
+        def __init__(self):
+            self.disabled = False
+            self.configured_state = None
+
+        def state(self, values):
+            if "disabled" in values:
+                self.disabled = True
+            if "!disabled" in values:
+                self.disabled = False
+
+        def configure(self, **kwargs):
+            self.configured_state = kwargs.get("state")
+
+    class FakeRoot:
+        def after(self, _delay, _callback):
+            return None
+
+    class FakeThread:
+        def __init__(self, target, args=(), daemon=None):
+            self.target = target
+            self.args = args
+            self.daemon = daemon
+            threads.append(self)
+
+        def start(self):
+            calls.append(("thread_started", self.args))
+
     gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.root = FakeRoot()
     gui.input_mode_var = SimpleNamespace(get=lambda: "agent")
-    gui.app = SimpleNamespace(
-        process_user_input=lambda text, requested_mode=None: calls.append((text, requested_mode)) or {
-            "mode": "agent",
-            "result": {"ok": True, "message": "done", "transcript": []},
-        }
-    )
-    gui._append_chat_message = lambda *args, **kwargs: None
-    gui._remember_debug_image = lambda result: None
-    gui._render_agent_result = lambda result: calls.append(("render_agent", result["message"]))
+    gui.app = SimpleNamespace(process_user_input=lambda *args, **kwargs: calls.append(("process_user_input", args, kwargs)))
+    gui.agent_event_queue = queue.Queue()
+    gui.agent_running = False
+    gui.send_button = FakeStateWidget()
+    gui.mode_selector = FakeStateWidget()
+    gui.input_entry = FakeStateWidget()
+    gui.running_var = FakeVar("idle")
+    gui.safety_var = FakeVar("Guarded")
     gui._refresh_status_bar = lambda: None
-    gui._maybe_refresh_memory = lambda result: None
+    gui._append_chat_message = lambda *args, **kwargs: calls.append(("chat", args[1]))
+    monkeypatch.setattr(main_module.threading, "Thread", FakeThread)
 
-    gui.submit_text("Describe my current screen briefly.")
+    started = gui.submit_text("Describe my current screen briefly.")
 
-    assert calls[0] == ("Describe my current screen briefly.", "agent")
-    assert calls[1] == ("render_agent", "done")
+    assert started is True
+    assert calls[0] == ("chat", "Describe my current screen briefly.")
+    assert calls[1][0] == "thread_started"
+    assert not any(call[0] == "process_user_input" for call in calls)
+    assert gui.agent_running is True
+    assert gui.running_var.get() == "busy"
+    assert gui.send_button.disabled is True
+    assert gui.mode_selector.configured_state == "disabled"
+    assert gui.input_entry.configured_state == "disabled"
 
 
 def test_gui_submit_text_keeps_old_route_when_auto_mode_selected():
@@ -448,9 +497,176 @@ def test_gui_submit_text_keeps_old_route_when_auto_mode_selected():
     gui._refresh_status_bar = lambda: None
     gui._maybe_refresh_memory = lambda result: None
 
-    gui.submit_text("hello")
+    started = gui.submit_text("hello")
 
+    assert started is True
     assert calls[0] == ("hello", None)
+
+
+def test_agent_queue_result_updates_conversation_and_reenables_controls():
+    calls = []
+
+    class FakeVar:
+        def __init__(self, value=""):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class FakeStateWidget:
+        def __init__(self):
+            self.disabled = True
+            self.configured_state = "disabled"
+
+        def state(self, values):
+            if "disabled" in values:
+                self.disabled = True
+            if "!disabled" in values:
+                self.disabled = False
+
+        def configure(self, **kwargs):
+            self.configured_state = kwargs.get("state")
+
+    class FakeRoot:
+        def after(self, _delay, _callback):
+            return None
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.root = FakeRoot()
+    gui.agent_event_queue = queue.Queue()
+    gui.agent_running = True
+    gui.running_var = FakeVar("busy")
+    gui.safety_var = FakeVar("Guarded")
+    gui.send_button = FakeStateWidget()
+    gui.mode_selector = FakeStateWidget()
+    gui.input_entry = FakeStateWidget()
+    gui._refresh_status_bar = lambda: None
+    gui._handle_completed_request = lambda request: calls.append(("completed", request["result"]["message"]))
+
+    gui.agent_event_queue.put({"type": "agent_result", "request": {"mode": "agent", "result": {"ok": True, "message": "done", "transcript": []}}})
+    gui.agent_event_queue.put({"type": "agent_finished"})
+    gui._drain_agent_events()
+
+    assert calls == [("completed", "done")]
+    assert gui.agent_running is False
+    assert gui.running_var.get() == "idle"
+    assert gui.send_button.disabled is False
+    assert gui.mode_selector.configured_state == "readonly"
+    assert gui.input_entry.configured_state == "normal"
+
+
+def test_agent_queue_error_reenables_controls():
+    messages = []
+
+    class FakeVar:
+        def __init__(self, value=""):
+            self.value = value
+
+        def set(self, value):
+            self.value = value
+
+        def get(self):
+            return self.value
+
+    class FakeStateWidget:
+        def __init__(self):
+            self.disabled = True
+            self.configured_state = "disabled"
+
+        def state(self, values):
+            if "disabled" in values:
+                self.disabled = True
+            if "!disabled" in values:
+                self.disabled = False
+
+        def configure(self, **kwargs):
+            self.configured_state = kwargs.get("state")
+
+    class FakeRoot:
+        def after(self, _delay, _callback):
+            return None
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.root = FakeRoot()
+    gui.agent_event_queue = queue.Queue()
+    gui.agent_running = True
+    gui.running_var = FakeVar("busy")
+    gui.safety_var = FakeVar("Guarded")
+    gui.send_button = FakeStateWidget()
+    gui.mode_selector = FakeStateWidget()
+    gui.input_entry = FakeStateWidget()
+    gui._refresh_status_bar = lambda: None
+    gui._append_chat_message = lambda speaker, text, speaker_tag, body_tag="body": messages.append((speaker, text, body_tag))
+
+    gui.agent_event_queue.put({"type": "agent_error", "error": "planner exploded"})
+    gui.agent_event_queue.put({"type": "agent_finished"})
+    gui._drain_agent_events()
+
+    assert gui.running_var.get() == "idle"
+    assert gui.agent_running is False
+    assert gui.send_button.disabled is False
+    assert messages[0] == ("Agent Error", "planner exploded", "error")
+
+
+def test_double_send_is_prevented_while_agent_is_running():
+    messages = []
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.input_mode_var = SimpleNamespace(get=lambda: "agent")
+    gui.agent_running = True
+    gui._append_chat_message = lambda speaker, text, speaker_tag, body_tag="body": messages.append((speaker, text, body_tag))
+
+    started = gui.submit_text("Describe my current screen briefly.")
+
+    assert started is False
+    assert "already running" in messages[0][1]
+    assert messages[0][2] == "error"
+
+
+def test_request_approval_from_worker_thread_is_marshaled_to_gui_queue():
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.agent_event_queue = queue.Queue()
+    gui.root = SimpleNamespace(after=lambda _delay, _callback: None)
+
+    approved_result = {}
+
+    def worker():
+        approved_result["value"] = gui.request_approval({"summary": "Approve test click", "tool_calls": [{"tool": "desktop_execute_suggestion", "args": {"suggestion_id": "desk_suggest_demo"}}]})
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    event = gui.agent_event_queue.get(timeout=1.0)
+
+    assert event["type"] == "approval_request"
+    assert event["prompt"]["summary"] == "Approve test click"
+    event["approved"]["value"] = True
+    event["done"].set()
+    thread.join(timeout=1.0)
+    assert approved_result["value"] is True
+
+
+def test_agent_queue_processes_approval_request_on_main_thread():
+    calls = []
+
+    class FakeRoot:
+        def after(self, _delay, _callback):
+            return None
+
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui.root = FakeRoot()
+    gui.agent_event_queue = queue.Queue()
+    gui._show_approval_dialog = lambda prompt, approved, done: calls.append(prompt["summary"]) or approved.__setitem__("value", True) or done.set()
+
+    approved = {"value": False}
+    done = threading.Event()
+    gui.agent_event_queue.put({"type": "approval_request", "prompt": {"summary": "Approve click"}, "approved": approved, "done": done})
+    gui._drain_agent_events()
+
+    assert calls == ["Approve click"]
+    assert approved["value"] is True
+    assert done.is_set() is True
 
 
 def test_gui_renders_suggested_desktop_action_text():

@@ -767,6 +767,9 @@ class LocalPilotGUI:
         self.root.geometry("1320x860")
         self.root.minsize(1180, 780)
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
+        self.agent_event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
+        self.agent_running = False
+        self.agent_worker_thread: threading.Thread | None = None
         self.desktop_overlay: tk.Toplevel | None = None
         self.desktop_overlay_action_label: tk.Label | None = None
         self.desktop_overlay_shown_at: float | None = None
@@ -776,6 +779,7 @@ class LocalPilotGUI:
         self._build_widgets()
         self._refresh_status_bar()
         self.root.after(150, self._drain_events)
+        self.root.after(100, self._drain_agent_events)
 
     def _font_token(self) -> str:
         return "Cascadia Mono"
@@ -1178,8 +1182,8 @@ class LocalPilotGUI:
         )
         self.mode_selector.grid(row=1, column=1, padx=(12, 0), sticky="ew")
         self.mode_selector.bind("<<ComboboxSelected>>", lambda _event: self._on_mode_selected())
-        send_button = ttk.Button(input_frame, text="Dispatch", command=self.submit_input, style="Action.TButton")
-        send_button.grid(row=1, column=2, padx=(12, 0), sticky="ew")
+        self.send_button = ttk.Button(input_frame, text="Dispatch", command=self.submit_input, style="Action.TButton")
+        self.send_button.grid(row=1, column=2, padx=(12, 0), sticky="ew")
         tk.Label(
             input_frame,
             text="Try: describe my screen briefly | search the web for cats | set a timer for 5 minutes",
@@ -1239,24 +1243,27 @@ class LocalPilotGUI:
         text = self.input_entry.get().strip()
         if not text:
             return
-        self.input_entry.delete(0, tk.END)
-        self.submit_text(text)
+        if self.submit_text(text):
+            self.input_entry.delete(0, tk.END)
 
-    def submit_text(self, text: str) -> None:
+    def submit_text(self, text: str) -> bool:
+        if getattr(self, "agent_running", False):
+            self._append_chat_message(
+                "LocalPilot",
+                "Agent is already running. Wait for the current task to finish before sending another request.",
+                speaker_tag="assistant",
+                body_tag="error",
+            )
+            return False
+        selected_mode = self._selected_request_mode()
+        if selected_mode == "agent":
+            self._append_chat_message("You", text, speaker_tag="user")
+            self._start_agent_request(text)
+            return True
         self._append_chat_message("You", text, speaker_tag="user")
-        request = self.app.process_user_input(text, requested_mode=self._selected_request_mode())
-        self._remember_debug_image(request["result"])
-        if request["mode"] == "agent":
-            self._render_agent_result(request["result"])
-        else:
-            rendered = format_result(request["result"])
-            speaker_tag = "assistant"
-            body_tag = "body"
-            if isinstance(request["result"], dict) and request["result"].get("error"):
-                body_tag = "error"
-            self._append_chat_message("LocalPilot", rendered, speaker_tag=speaker_tag, body_tag=body_tag)
-        self._refresh_status_bar()
-        self._maybe_refresh_memory(request["result"])
+        request = self.app.process_user_input(text, requested_mode=selected_mode)
+        self._handle_completed_request(request)
+        return True
 
     def on_event(self, event: dict[str, Any]) -> None:
         self.event_queue.put(event)
@@ -1280,23 +1287,111 @@ class LocalPilotGUI:
             self._refresh_status_bar()
         self.root.after(150, self._drain_events)
 
+    def _start_agent_request(self, text: str) -> None:
+        self._set_agent_busy_state(True)
+        self.agent_event_queue.put({"type": "agent_started", "message": "Agent is thinking..."})
+        worker = threading.Thread(
+            target=self._run_agent_request_worker,
+            args=(text,),
+            daemon=True,
+        )
+        self.agent_worker_thread = worker
+        worker.start()
+
+    def _run_agent_request_worker(self, text: str) -> None:
+        try:
+            request = self.app.process_user_input(text, requested_mode="agent")
+            self.agent_event_queue.put({"type": "agent_result", "request": request})
+        except Exception as exc:
+            self.agent_event_queue.put({"type": "agent_error", "error": str(exc)})
+        finally:
+            self.agent_event_queue.put({"type": "agent_finished"})
+
+    def _drain_agent_events(self) -> None:
+        while not self.agent_event_queue.empty():
+            event = self.agent_event_queue.get()
+            event_type = str(event.get("type", "")).strip()
+            if event_type == "agent_started":
+                self.running_var.set("busy")
+                self._append_chat_message("LocalPilot", str(event.get("message", "Agent is thinking...")), speaker_tag="assistant")
+            elif event_type == "agent_result":
+                self._handle_completed_request(event["request"])
+            elif event_type == "agent_error":
+                self.running_var.set("error")
+                self._append_chat_message("Agent Error", str(event.get("error", "Unknown agent error.")), speaker_tag="assistant", body_tag="error")
+                self._refresh_status_bar()
+            elif event_type == "approval_request":
+                self._show_approval_dialog(
+                    prompt=event["prompt"],
+                    approved=event["approved"],
+                    done=event["done"],
+                )
+            elif event_type == "agent_finished":
+                self._set_agent_busy_state(False)
+        self.root.after(100, self._drain_agent_events)
+
+    def _handle_completed_request(self, request: dict[str, Any]) -> None:
+        self._remember_debug_image(request["result"])
+        if request["mode"] == "agent":
+            self._render_agent_result(request["result"])
+        else:
+            rendered = format_result(request["result"])
+            speaker_tag = "assistant"
+            body_tag = "body"
+            if isinstance(request["result"], dict) and request["result"].get("error"):
+                body_tag = "error"
+            self._append_chat_message("LocalPilot", rendered, speaker_tag=speaker_tag, body_tag=body_tag)
+        self._refresh_status_bar()
+        self._maybe_refresh_memory(request["result"])
+
+    def _set_agent_busy_state(self, running: bool) -> None:
+        self.agent_running = running
+        self.running_var.set("busy" if running else "idle")
+        self._set_widget_enabled(getattr(self, "send_button", None), not running, readonly=False)
+        self._set_widget_enabled(getattr(self, "mode_selector", None), not running, readonly=True)
+        self._set_widget_enabled(getattr(self, "input_entry", None), not running, readonly=False)
+        for button in getattr(self, "tool_buttons", []):
+            self._set_widget_enabled(button, not running, readonly=False)
+        self._refresh_status_bar()
+
+    def _set_widget_enabled(self, widget: Any, enabled: bool, *, readonly: bool) -> None:
+        if widget is None:
+            return
+        target_state = ("readonly" if readonly else "normal") if enabled else "disabled"
+        try:
+            if hasattr(widget, "state"):
+                widget.state(["!disabled"] if enabled else ["disabled"])
+        except Exception:
+            pass
+        try:
+            widget.configure(state=target_state)
+        except Exception:
+            return
+
     def request_approval(self, prompt: Any) -> bool:
         approved = {"value": False}
         done = threading.Event()
 
-        def show_dialog() -> None:
-            self.safety_var.set("Waiting for approval")
-            dialog = self._build_approval_window(prompt, approved, done)
-            self.approval_window = dialog
-
         if threading.current_thread() is threading.main_thread():
-            show_dialog()
-            if self.approval_window is not None and self.approval_window.winfo_exists():
-                self.root.wait_window(self.approval_window)
+            self._show_approval_dialog(prompt=prompt, approved=approved, done=done)
         else:
-            self.root.after(0, show_dialog)
+            self.agent_event_queue.put(
+                {
+                    "type": "approval_request",
+                    "prompt": prompt,
+                    "approved": approved,
+                    "done": done,
+                }
+            )
             done.wait()
         return approved["value"]
+
+    def _show_approval_dialog(self, prompt: Any, approved: dict[str, bool], done: threading.Event) -> None:
+        self.safety_var.set("Waiting for approval")
+        dialog = self._build_approval_window(prompt, approved, done)
+        self.approval_window = dialog
+        if self.approval_window is not None and self.approval_window.winfo_exists():
+            self.root.wait_window(self.approval_window)
 
     def run(self) -> None:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1351,6 +1446,7 @@ class LocalPilotGUI:
         return text
 
     def _build_tools_tab(self, parent: tk.Frame) -> None:
+        self.tool_buttons: list[Any] = []
         container = tk.Frame(parent, bg=self.colors["bg"])
         container.pack(fill="both", expand=True, padx=8, pady=8)
 
@@ -1410,6 +1506,7 @@ class LocalPilotGUI:
             for label, command in actions:
                 button = ttk.Button(group, text=label, command=command, style="Ghost.TButton")
                 button.pack(fill="x", pady=4)
+                self.tool_buttons.append(button)
 
     def clear_chat(self) -> None:
         self.output.configure(state="normal")
