@@ -10,10 +10,17 @@ from typing import Any, Callable
 
 from app.checkpoints import CheckpointManager
 from app.browser_tool import BrowserToolBridge
+from app.desktop_tool import (
+    get_mouse_position as desktop_get_mouse_position,
+    get_screen_size as desktop_get_screen_size,
+    move_mouse_preview,
+    suggest_action_from_screenshot,
+)
 from app.lmstudio_client import LMStudioClient
 from app.logger import AppLogger
 from app.memory import MemoryStore
 from app.safety import RISK_BLOCKED, RISK_DANGEROUS, RISK_MEDIUM, SafetyDecision, SafetyManager
+from app.timer_tool import TimerManager
 from app.tools.files import list_folder, read_file, write_file
 from app.tools.screen import take_screenshot
 
@@ -50,6 +57,7 @@ class ToolRegistry:
         browser_bridge: BrowserToolBridge | None = None,
         checkpoint_manager: CheckpointManager | None = None,
         memory_store: MemoryStore | None = None,
+        timer_manager: TimerManager | None = None,
     ) -> None:
         self.root_dir = Path(root_dir).resolve()
         self.workspace_root = (self.root_dir / "workspace").resolve()
@@ -63,6 +71,7 @@ class ToolRegistry:
         self.browser_bridge = browser_bridge or BrowserToolBridge(self.root_dir)
         self.checkpoint_manager = checkpoint_manager or CheckpointManager(self.root_dir / "memory" / "checkpoints")
         self.memory_store = memory_store or MemoryStore(self.root_dir / "memory", self.root_dir / "config" / "capabilities.json")
+        self.timer_manager = timer_manager or TimerManager(self.root_dir / "memory" / "timers.json")
         self._approved_plans: dict[str, dict[str, Any]] = {}
         self._tools: dict[str, ToolDefinition] = {}
         self._register_builtin_tools()
@@ -207,6 +216,144 @@ class ToolRegistry:
                 risk_level="safe",
                 approval_required=False,
                 handler=self._handle_read_session,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="get_current_task",
+                description="Read the current active agent task state.",
+                argument_schema={"type": "object", "properties": {}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_get_current_task,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="update_current_task",
+                description="Update the current active task state with new status or notes.",
+                argument_schema={"type": "object", "properties": {"updates": {"type": "object"}}, "required": ["updates"]},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_update_current_task,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="clear_current_task",
+                description="Clear the saved current active task state.",
+                argument_schema={"type": "object", "properties": {}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_clear_current_task,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="summarize_recent_sessions",
+                description="Summarize the most recent agent sessions.",
+                argument_schema={"type": "object", "properties": {"limit": {"type": "integer"}}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_summarize_recent_sessions,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="set_timer",
+                description="Set a real local PC timer that notifies the user without blocking the agent.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {
+                        "duration_seconds": {"type": "integer"},
+                        "label": {"type": "string"},
+                        "notify": {"type": "boolean"},
+                    },
+                    "required": ["duration_seconds"],
+                },
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_set_timer,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="list_timers",
+                description="List active or recent local timers.",
+                argument_schema={"type": "object", "properties": {"include_inactive": {"type": "boolean"}}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_list_timers,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="cancel_timer",
+                description="Cancel a previously scheduled local timer.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {"timer_id": {"type": "string"}},
+                    "required": ["timer_id"],
+                },
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_cancel_timer,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="desktop_get_screen_size",
+                description="Read the current primary screen size in pixels.",
+                argument_schema={"type": "object", "properties": {}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_desktop_get_screen_size,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="desktop_get_mouse_position",
+                description="Read the current mouse cursor position on the Windows desktop.",
+                argument_schema={"type": "object", "properties": {}},
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_desktop_get_mouse_position,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="desktop_suggest_action",
+                description="Analyze a desktop screenshot and suggest the next desktop action without executing it.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "instruction": {"type": "string"},
+                    },
+                    "required": ["path", "instruction"],
+                },
+                risk_level="safe",
+                approval_required=False,
+                handler=self._handle_desktop_suggest_action,
+            )
+        )
+        self.register(
+            ToolDefinition(
+                name="desktop_move_mouse_preview",
+                description="Move the mouse to preview a suggested desktop target without clicking.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {
+                        "x": {"type": "integer"},
+                        "y": {"type": "integer"},
+                        "target": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["x", "y"],
+                },
+                risk_level="medium",
+                approval_required=True,
+                handler=self._handle_desktop_move_mouse_preview,
             )
         )
         self.register(
@@ -421,6 +568,14 @@ class ToolRegistry:
             if checkpoint is not None:
                 affected_files = [str(entry.get("original_path")) for entry in checkpoint.get("files", []) if entry.get("original_path")]
                 summary = f"Restore checkpoint `{args.get('checkpoint_id', '')}` for {len(affected_files)} file(s)."
+        elif tool_name == "desktop_move_mouse_preview":
+            target_suffix = f" near {args.get('target')!r}" if args.get("target") else ""
+            summary = (
+                "Move the mouse for preview only"
+                f" to ({args.get('x')}, {args.get('y')})"
+                f"{target_suffix}."
+                " No click will be performed."
+            )
         request = {
             "approval_id": uuid.uuid4().hex[:12],
             "type": "approval_request",
@@ -626,6 +781,62 @@ class ToolRegistry:
         if session is None:
             return {"ok": False, "error": f"Session not found: {args['session_id']}"}
         return {"ok": True, "session": session}
+
+    def _handle_get_current_task(self, args: dict[str, Any]) -> dict[str, Any]:
+        task = self.memory_store.load_current_task()
+        return {"ok": True, "current_task": task}
+
+    def _handle_update_current_task(self, args: dict[str, Any]) -> dict[str, Any]:
+        updates = args.get("updates") or {}
+        if not isinstance(updates, dict):
+            return {"ok": False, "error": "updates must be an object."}
+        current_task = self.memory_store.update_current_task(**updates)
+        return {"ok": True, "current_task": current_task}
+
+    def _handle_clear_current_task(self, args: dict[str, Any]) -> dict[str, Any]:
+        message = self.memory_store.clear_current_task()
+        return {"ok": True, "message": message}
+
+    def _handle_summarize_recent_sessions(self, args: dict[str, Any]) -> dict[str, Any]:
+        limit = max(int(args.get("limit", 3)), 1)
+        return {"ok": True, "summary": self.memory_store.summarize_recent_sessions(limit=limit)}
+
+    def _handle_set_timer(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.timer_manager.set_timer(
+            duration_seconds=int(args["duration_seconds"]),
+            label=str(args.get("label", "Timer")),
+            notify=bool(args.get("notify", True)),
+        )
+
+    def _handle_list_timers(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.timer_manager.list_timers(include_inactive=bool(args.get("include_inactive", False)))
+
+    def _handle_cancel_timer(self, args: dict[str, Any]) -> dict[str, Any]:
+        return self.timer_manager.cancel_timer(str(args["timer_id"]))
+
+    def _handle_desktop_get_screen_size(self, args: dict[str, Any]) -> dict[str, Any]:
+        return desktop_get_screen_size()
+
+    def _handle_desktop_get_mouse_position(self, args: dict[str, Any]) -> dict[str, Any]:
+        return desktop_get_mouse_position()
+
+    def _handle_desktop_suggest_action(self, args: dict[str, Any]) -> dict[str, Any]:
+        raw_path = str(args["path"])
+        path = self._resolve_user_path(raw_path) if not Path(raw_path).is_absolute() else Path(raw_path).resolve()
+        return suggest_action_from_screenshot(
+            screenshot_path=path,
+            instruction=str(args["instruction"]),
+            lmstudio_client=self.lmstudio_client,
+            model=self.lmstudio_client.default_vision_model,
+        )
+
+    def _handle_desktop_move_mouse_preview(self, args: dict[str, Any]) -> dict[str, Any]:
+        return move_mouse_preview(
+            int(args["x"]),
+            int(args["y"]),
+            target=str(args.get("target", "")),
+            confidence=float(args["confidence"]) if args.get("confidence") is not None else None,
+        )
 
     def _handle_analyze_screenshot(self, args: dict[str, Any]) -> dict[str, Any]:
         path = self._resolve_user_path(str(args["path"])) if not Path(str(args["path"])).is_absolute() else Path(str(args["path"])).resolve()

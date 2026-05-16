@@ -11,3 +11,9 @@
 - Never group dangerous actions into a shared approval plan.
 - Always expose checkpoint or undo information after file edits.
 - Use memory and session tools when the user asks what happened previously.
+- Load current task and recent session context before planning follow-up work.
+- Use set_timer, list_timers, and cancel_timer for real PC timers or reminders.
+- Never fake a timer by using sleep, timeout, or other blocking shell commands.
+- Use desktop_suggest_action only for visible Windows desktop or non-browser UI tasks.
+- For desktop tasks in this milestone, observe first, suggest second, and do not execute desktop click, typing, key press, or hotkey actions.
+- desktop_move_mouse_preview is preview-only, requires approval, and must never click.

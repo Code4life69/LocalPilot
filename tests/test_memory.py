@@ -40,3 +40,27 @@ def test_search_notes_deduplicates_matches(tmp_path):
     )
 
     assert store.search_notes("duplicate") == ["duplicate note"]
+
+
+def test_current_task_save_load_and_clear(tmp_path):
+    memory_dir = tmp_path / "memory"
+    manifest = tmp_path / "capabilities.json"
+    manifest.write_text('{"name": "LocalPilot", "modes": ["chat"]}', encoding="utf-8")
+
+    store = MemoryStore(memory_dir, manifest)
+    store.save_current_task(
+        {
+            "active_task_id": "task123",
+            "original_user_task": "build a website",
+            "latest_user_message": "continue",
+            "mode": "agent",
+            "status": "active",
+        }
+    )
+
+    current = store.load_current_task()
+
+    assert current is not None
+    assert current["active_task_id"] == "task123"
+    assert store.clear_current_task() == "Current task cleared."
+    assert store.load_current_task() is None

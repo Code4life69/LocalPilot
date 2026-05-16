@@ -6,12 +6,19 @@ from pathlib import Path
 from typing import Any
 
 
+FOLLOWUP_APPROVE = {"yes", "y", "approve", "approved", "go ahead", "do it"}
+FOLLOWUP_DENY = {"no", "n", "deny", "denied", "cancel", "stop"}
+FOLLOWUP_CONTINUE = {"continue", "try again"}
+FOLLOWUP_STATUS = {"what happened", "status"}
+
+
 class MemoryStore:
     def __init__(self, memory_dir: str | Path, capability_manifest_path: str | Path) -> None:
         self.memory_dir = Path(memory_dir)
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self.notes_path = self.memory_dir / "notes.md"
         self.facts_path = self.memory_dir / "learned_facts.json"
+        self.current_task_path = self.memory_dir / "current_task.json"
         self.sessions_dir = self.memory_dir / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.capability_manifest_path = Path(capability_manifest_path)
@@ -19,6 +26,8 @@ class MemoryStore:
             self.notes_path.write_text("# LocalPilot Notes\n\n", encoding="utf-8")
         if not self.facts_path.exists():
             self.facts_path.write_text("{}\n", encoding="utf-8")
+        if not self.current_task_path.exists():
+            self.current_task_path.write_text("{}\n", encoding="utf-8")
 
     def load_capabilities(self) -> dict[str, Any]:
         with self.capability_manifest_path.open("r", encoding="utf-8") as handle:
@@ -108,6 +117,7 @@ class MemoryStore:
                     "files_changed": data.get("files_changed", []),
                     "browser_actions": data.get("browser_actions", []),
                     "errors": data.get("errors", []),
+                    "summary": data.get("summary", ""),
                     "session_path": str(session_path),
                 }
             )
@@ -138,4 +148,61 @@ class MemoryStore:
                 data.setdefault("session_id", session_path.stem)
                 data.setdefault("session_path", str(session_path))
                 return data
+        return None
+
+    def load_current_task(self) -> dict[str, Any] | None:
+        try:
+            data = json.loads(self.current_task_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict) or not data:
+            return None
+        if not data.get("active_task_id"):
+            return None
+        return data
+
+    def save_current_task(self, record: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(record)
+        payload["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        self.current_task_path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+        return payload
+
+    def update_current_task(self, **updates: Any) -> dict[str, Any]:
+        current = self.load_current_task() or {}
+        payload = dict(current)
+        payload.update({key: value for key, value in updates.items() if value is not None})
+        recent_steps = payload.get("recent_step_summaries") or []
+        if isinstance(recent_steps, list):
+            payload["recent_step_summaries"] = recent_steps[-6:]
+        return self.save_current_task(payload)
+
+    def clear_current_task(self) -> str:
+        self.current_task_path.write_text("{}\n", encoding="utf-8")
+        return "Current task cleared."
+
+    def summarize_recent_sessions(self, limit: int = 3) -> str:
+        sessions = self.list_session_summaries(limit=limit)
+        if not sessions:
+            return "No recent sessions."
+        lines: list[str] = []
+        for session in sessions:
+            summary = str(session.get("summary", "")).strip()
+            if summary:
+                lines.append(f"- {summary}")
+            else:
+                lines.append(
+                    f"- {session.get('user_task', '')} | status={session.get('status', 'unknown')} | final={session.get('final_answer', '') or '(none)'}"
+                )
+        return "\n".join(lines)
+
+    def followup_kind(self, text: str) -> str | None:
+        lowered = text.strip().lower()
+        if lowered in FOLLOWUP_APPROVE:
+            return "approve"
+        if lowered in FOLLOWUP_DENY:
+            return "deny"
+        if lowered in FOLLOWUP_CONTINUE or lowered.startswith("i meant "):
+            return "continue"
+        if lowered in FOLLOWUP_STATUS:
+            return "status"
         return None

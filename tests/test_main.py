@@ -1,9 +1,11 @@
 from pathlib import Path
 from types import SimpleNamespace
+import builtins
 import threading
 
 from app import main as main_module
 from app.main import LocalPilotApp, LocalPilotGUI, format_result
+from app.modes.agent_mode import AgentMode
 
 
 def test_format_result_for_desktop_understanding_image():
@@ -36,6 +38,32 @@ def test_yes_with_no_pending_task_is_safe():
 
     assert request["mode"] == "chat"
     assert request["result"]["message"] == "No pending task to continue."
+
+
+def test_agent_mode_yes_bypasses_old_pending_followup_short_circuit():
+    events = []
+    app = LocalPilotApp.__new__(LocalPilotApp)
+    app.pending_followup = None
+    app.safety = SimpleNamespace(is_broad_destructive_request=lambda text: False)
+    app.router = SimpleNamespace(classify=lambda text: "chat")
+    app.modes = {
+        "chat": SimpleNamespace(handle=lambda request: {"ok": True, "message": "chat"}),
+        "agent": SimpleNamespace(handle=lambda request: {"ok": True, "message": "agent", "transcript": []}),
+    }
+    app.logger = SimpleNamespace(event=lambda role, message, **extra: events.append((role, message, extra)))
+    app.task_state = SimpleNamespace(update=lambda **kwargs: kwargs)
+    app._active_operating_profile_name = lambda: "reliable_stack"
+    app._active_model_for_mode = lambda mode: "qwen2.5-coder-14b-instruct" if mode == "agent" else "gemma4:e4b"
+    app._role_for_mode = lambda mode: "agent" if mode == "agent" else "main"
+    app._update_task_state_after_result = lambda request, result: None
+    app._safety_state_for_result = lambda mode, result: "guarded" if mode == "agent" else "idle"
+    app._result_status_for_logging = lambda result: "ok"
+    app._resolve_mode = main_module.LocalPilotApp._resolve_mode.__get__(app, LocalPilotApp)
+
+    request = app.process_user_input("yes", requested_mode="agent")
+
+    assert request["mode"] == "agent"
+    assert request["result"]["message"] == "agent"
 
 
 def test_affirmative_followup_continues_pending_task():
@@ -423,6 +451,62 @@ def test_gui_submit_text_keeps_old_route_when_auto_mode_selected():
     gui.submit_text("hello")
 
     assert calls[0] == ("hello", None)
+
+
+def test_gui_renders_suggested_desktop_action_text():
+    messages = []
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui._append_chat_message = lambda speaker, text, speaker_tag, body_tag="body": messages.append(
+        {"speaker": speaker, "text": text, "speaker_tag": speaker_tag, "body_tag": body_tag}
+    )
+
+    gui._render_agent_result(
+        {
+            "ok": True,
+            "transcript": [
+                {
+                    "type": "tool_result",
+                    "payload": {
+                        "ok": True,
+                        "tool": "desktop_suggest_action",
+                        "result": {
+                            "action": "click",
+                            "target": "Google search bar",
+                            "x": 735,
+                            "y": 410,
+                            "confidence": 0.86,
+                            "risk": "medium",
+                            "reason": "The search field looks like the next relevant target.",
+                            "executed": False,
+                            "warning": "",
+                        },
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "Suggested desktop action:" in messages[0]["text"]
+    assert "Coordinates: x=735, y=410" in messages[0]["text"]
+    assert "No action was executed." in messages[0]["text"]
+
+
+def test_agent_mode_returns_structured_error_when_agent_raises():
+    mode = AgentMode(
+        SimpleNamespace(
+            agent=SimpleNamespace(run_task=lambda _task: (_ for _ in ()).throw(RuntimeError("LM Studio request timed out after 90 seconds."))),
+            lmstudio=SimpleNamespace(
+                default_text_model="qwen2.5-coder-14b-instruct",
+                default_vision_model="qwen3-vl-8b-instruct",
+            ),
+        )
+    )
+
+    result = mode.handle({"user_text": "Describe my screen"})
+
+    assert result["ok"] is False
+    assert result["status"] == "error"
+    assert "timed out" in result["error"]
 
 
 def test_load_memory_panel_includes_recent_sessions():
@@ -823,3 +907,34 @@ def test_main_handles_agent_cli_before_app_bootstrap(monkeypatch, tmp_path):
     exit_code = main_module.main(["--agent-cli"])
 
     assert exit_code == 0
+
+
+def test_run_agent_cli_prints_clean_agent_error(monkeypatch, tmp_path):
+    printed = []
+    prompts = iter(["Describe my screen", "exit"])
+
+    monkeypatch.setattr(main_module, "load_settings", lambda _root_dir: {"memory_dir": "memory", "logs_dir": "logs", "lmstudio": {}})
+    monkeypatch.setattr(main_module, "AppLogger", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(main_module, "MemoryStore", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(main_module, "TimerManager", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(main_module, "LMStudioClient", lambda **_kwargs: SimpleNamespace(default_text_model="qwen2.5-coder-14b-instruct", default_vision_model="qwen3-vl-8b-instruct"))
+    monkeypatch.setattr(main_module, "SafetyManager", lambda **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(main_module, "CheckpointManager", lambda *_args, **_kwargs: SimpleNamespace())
+    monkeypatch.setattr(main_module, "ToolRegistry", lambda **_kwargs: SimpleNamespace())
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            return None
+
+        def run_task(self, _user_text):
+            raise RuntimeError("LM Studio request timed out after 90 seconds.")
+
+    monkeypatch.setattr(main_module, "LocalPilotAgent", FakeAgent)
+    monkeypatch.setattr(main_module, "safe_console_print", lambda text="": printed.append(text))
+    monkeypatch.setattr(builtins, "input", lambda _prompt="": next(prompts))
+
+    exit_code = main_module.run_agent_cli(tmp_path)
+
+    assert exit_code == 0
+    assert any("Agent error:" in line for line in printed)
+    assert any("timed out" in line for line in printed)

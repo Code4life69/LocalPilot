@@ -70,7 +70,7 @@ class LocalPilotAgent:
             raise ValueError("Agent response type must be one of: tool_call, final, question.")
         return payload
 
-    def _build_system_prompt(self) -> str:
+    def _build_system_prompt(self, working_memory: str = "") -> str:
         tools_json = json.dumps(self.tool_registry.list_tools(), indent=2)
         prompt = (
             "You are LocalPilot, an AI agent. Python is only your tool harness.\n"
@@ -79,6 +79,12 @@ class LocalPilotAgent:
             "Never pretend a tool succeeded. Never claim to have seen output you were not given.\n"
             "For websites, prefer Puppeteer-controlled browser tools before desktop mouse tools.\n"
             "Use browser DOM/text tools for website interaction and screenshot vision tools for visual understanding.\n"
+            "Use desktop_suggest_action only for visible Windows desktop or non-browser UI tasks.\n"
+            "For desktop tasks in this milestone, observe first, suggest second, and never execute desktop click, type, key press, or hotkey actions.\n"
+            "If you need a visual desktop target, capture a screenshot first and then ask for a dry-run suggestion.\n"
+            "desktop_move_mouse_preview is preview-only and still requires approval.\n"
+            "For timers or reminders on this PC, use set_timer, list_timers, or cancel_timer.\n"
+            "Never use run_command with sleep or timeout as a fake timer.\n"
             "When a browser task obviously needs multiple medium-risk steps, you may include an `approval_plan` object on the first tool call.\n"
             "Reply with JSON only.\n"
             "Allowed response formats:\n"
@@ -91,6 +97,8 @@ class LocalPilotAgent:
         rules_text = self._load_pilot_rules()
         if rules_text:
             prompt += f"\n\nPilot rules:\n{rules_text}"
+        if working_memory:
+            prompt += f"\n\nWorking memory:\n{working_memory}"
         return prompt
 
     def _load_pilot_rules(self) -> str:
@@ -101,12 +109,150 @@ class LocalPilotAgent:
             return ""
         return rules_path.read_text(encoding="utf-8").strip()
 
-    def run_task(self, user_task: str) -> dict[str, Any]:
-        task_id = uuid.uuid4().hex[:12]
+    def _build_working_memory(self, current_task: dict[str, Any] | None) -> str:
+        lines: list[str] = []
+        if current_task:
+            lines.extend(
+                [
+                    f"Current active task id: {current_task.get('active_task_id', '')}",
+                    f"Original task: {current_task.get('original_user_task', '')}",
+                    f"Latest user message: {current_task.get('latest_user_message', '')}",
+                    f"Status: {current_task.get('status', '')}",
+                ]
+            )
+            last_tool_call = current_task.get("last_tool_call") or {}
+            if isinstance(last_tool_call, dict) and last_tool_call.get("tool"):
+                lines.append(f"Last tool call: {last_tool_call.get('tool')} {json.dumps(last_tool_call.get('args', {}), ensure_ascii=True)}")
+            for recent_tool_call in (current_task.get("recent_tool_calls") or [])[-3:]:
+                if isinstance(recent_tool_call, dict) and recent_tool_call.get("tool"):
+                    lines.append(
+                        f"Recent tool call: {recent_tool_call.get('tool')} {json.dumps(recent_tool_call.get('args', {}), ensure_ascii=True)}"
+                    )
+            last_approval = current_task.get("last_approval_request") or {}
+            if isinstance(last_approval, dict) and last_approval.get("summary"):
+                lines.append(f"Last approval request: {last_approval.get('summary')}")
+            if current_task.get("last_final_answer"):
+                lines.append(f"Last final answer: {current_task.get('last_final_answer')}")
+            for summary in (current_task.get("recent_step_summaries") or [])[-4:]:
+                lines.append(f"Recent step: {summary}")
+        if self.memory_store is not None:
+            recent_sessions = self.memory_store.summarize_recent_sessions(limit=2)
+            if recent_sessions and recent_sessions != "No recent sessions.":
+                lines.append("Recent session summaries:")
+                lines.extend(recent_sessions.splitlines())
+        return "\n".join(line for line in lines if line)
+
+    def _prepare_user_task(self, user_task: str, current_task: dict[str, Any] | None) -> tuple[str, str | None]:
+        if self.memory_store is None or current_task is None:
+            return user_task, None
+        followup_kind = self.memory_store.followup_kind(user_task)
+        if followup_kind is None:
+            return user_task, None
+        active_task_id = str(current_task.get("active_task_id") or "") or None
+        original_task = str(current_task.get("original_user_task") or current_task.get("latest_user_message") or "")
+        last_approval = current_task.get("last_approval_request") or {}
+        approval_summary = last_approval.get("summary") if isinstance(last_approval, dict) else ""
+        last_tool = current_task.get("last_tool_call") or {}
+        last_tool_name = last_tool.get("tool") if isinstance(last_tool, dict) else None
+        if followup_kind == "approve":
+            return (
+                "The user approved the pending request or continuation for the active task.\n"
+                f"Original task: {original_task}\n"
+                f"Pending approval: {approval_summary or 'No explicit approval summary recorded.'}\n"
+                f"Last tool call: {last_tool_name or 'none'}\n"
+                "Continue the task and avoid restarting from scratch.",
+                active_task_id,
+            )
+        if followup_kind == "deny":
+            return (
+                "The user denied the pending request for the active task.\n"
+                f"Original task: {original_task}\n"
+                f"Pending approval: {approval_summary or 'No explicit approval summary recorded.'}\n"
+                "Do not execute the denied action. Explain the outcome and propose a safer next step.",
+                active_task_id,
+            )
+        if followup_kind == "status":
+            return (
+                "The user asked for a status update on the active task.\n"
+                f"Original task: {original_task}\n"
+                "Summarize what happened, what tools ran, and the current outcome.",
+                active_task_id,
+            )
+        return (
+            "Continue the active task using the saved context.\n"
+            f"Original task: {original_task}\n"
+            f"User follow-up: {user_task}\n"
+            "Use the working memory to decide the next step.",
+            active_task_id,
+        )
+
+    def _current_task_status_for_question(self, question_text: str) -> str:
+        lowered = question_text.lower()
+        if any(token in lowered for token in ("approve", "approval", "allow", "confirm")):
+            return "waiting_for_approval"
+        return "active"
+
+    def _update_current_task_after_step(
+        self,
+        task_id: str,
+        original_user_task: str,
+        latest_user_message: str,
+        tool_payload: dict[str, Any] | None = None,
+        tool_result: dict[str, Any] | None = None,
+        status: str | None = None,
+        final_answer: str | None = None,
+        question: str | None = None,
+    ) -> None:
+        if self.memory_store is None:
+            return
+        current_task = self.memory_store.load_current_task() or {}
+        recent_step_summaries = list(current_task.get("recent_step_summaries") or [])
+        recent_tool_calls = list(current_task.get("recent_tool_calls") or [])
+        if tool_payload is not None:
+            summary = f"{tool_payload.get('tool', 'tool')} requested"
+            if tool_result is not None:
+                outcome = "ok" if tool_result.get("ok") else f"error: {tool_result.get('error', '')}"
+                summary = f"{tool_payload.get('tool', 'tool')} -> {outcome}"
+                if tool_result.get("approval"):
+                    summary += f" | approval: {tool_result['approval'].get('summary', '')}"
+            recent_step_summaries.append(summary)
+            recent_tool_calls.append({"tool": tool_payload.get("tool"), "args": tool_payload.get("args", {})})
+        updates: dict[str, Any] = {
+            "active_task_id": task_id,
+            "original_user_task": original_user_task,
+            "latest_user_message": latest_user_message,
+            "mode": "agent",
+            "status": status or current_task.get("status", "active"),
+            "last_tool_call": tool_payload or current_task.get("last_tool_call"),
+            "last_approval_request": (tool_result or {}).get("approval") if tool_result else current_task.get("last_approval_request"),
+            "last_final_answer": final_answer if final_answer is not None else current_task.get("last_final_answer"),
+            "recent_step_summaries": recent_step_summaries[-6:],
+            "recent_tool_calls": recent_tool_calls[-5:],
+        }
+        if question is not None:
+            updates["last_question"] = question
+        self.memory_store.update_current_task(**updates)
+
+    def run_task(self, user_task: str, continue_task_id: str | None = None) -> dict[str, Any]:
+        current_task = self.memory_store.load_current_task() if self.memory_store is not None else None
+        effective_user_task, suggested_task_id = self._prepare_user_task(user_task, current_task)
+        task_id = continue_task_id or suggested_task_id or uuid.uuid4().hex[:12]
         started_at = datetime.now().isoformat(timespec="seconds")
+        working_memory = self._build_working_memory(current_task)
+        original_user_task = (
+            str(current_task.get("original_user_task"))
+            if current_task is not None and str(current_task.get("active_task_id") or "") == task_id
+            else user_task
+        )
+        self._update_current_task_after_step(
+            task_id=task_id,
+            original_user_task=original_user_task,
+            latest_user_message=user_task,
+            status="active",
+        )
         messages = [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": user_task},
+            {"role": "system", "content": self._build_system_prompt(working_memory)},
+            {"role": "user", "content": effective_user_task},
         ]
         transcript: list[dict[str, Any]] = []
         steps: list[dict[str, Any]] = []
@@ -142,6 +288,14 @@ class LocalPilotAgent:
                 if tool_result.get("approval"):
                     step_record["approval"] = tool_result["approval"]
                 steps.append(step_record)
+                self._update_current_task_after_step(
+                    task_id=task_id,
+                    original_user_task=original_user_task,
+                    latest_user_message=user_task,
+                    tool_payload=tool_payload,
+                    tool_result=tool_result,
+                    status="active",
+                )
                 messages.append({"role": "assistant", "content": json.dumps(parsed, ensure_ascii=True)})
                 messages.append(
                     {
@@ -159,6 +313,14 @@ class LocalPilotAgent:
                 transcript.append({"type": "question", "payload": parsed})
                 step_record["question"] = parsed["message"]
                 steps.append(step_record)
+                question_status = self._current_task_status_for_question(parsed["message"])
+                self._update_current_task_after_step(
+                    task_id=task_id,
+                    original_user_task=original_user_task,
+                    latest_user_message=user_task,
+                    status=question_status,
+                    question=parsed["message"],
+                )
                 result = {"ok": True, "status": "question", "transcript": transcript, "steps": steps, "message": parsed["message"], "task_id": task_id}
                 self._persist_session(result, task_id, user_task, started_at)
                 return result
@@ -166,6 +328,13 @@ class LocalPilotAgent:
             transcript.append({"type": "final", "payload": parsed})
             step_record["final_answer"] = parsed["message"]
             steps.append(step_record)
+            self._update_current_task_after_step(
+                task_id=task_id,
+                original_user_task=original_user_task,
+                latest_user_message=user_task,
+                status="completed",
+                final_answer=parsed["message"],
+            )
             result = {"ok": True, "status": "final", "transcript": transcript, "steps": steps, "message": parsed["message"], "task_id": task_id}
             self._persist_session(result, task_id, user_task, started_at)
             return result
@@ -178,6 +347,13 @@ class LocalPilotAgent:
             "task_id": task_id,
             "error": f"Agent exceeded max_steps={self.max_steps} without reaching a final answer.",
         }
+        self._update_current_task_after_step(
+            task_id=task_id,
+            original_user_task=original_user_task,
+            latest_user_message=user_task,
+            status="failed",
+            final_answer=result["error"],
+        )
         self._persist_session(result, task_id, user_task, started_at)
         return result
 
@@ -197,6 +373,12 @@ class LocalPilotAgent:
             for step in steps
             if str(step.get("tool_call", {}).get("tool", "")).startswith("browser_")
         ]
+        tool_names = [str(tool_call.get("tool")) for tool_call in tool_calls if isinstance(tool_call, dict)]
+        unresolved_next_steps = ""
+        if result.get("status") == "question":
+            unresolved_next_steps = result.get("message", "")
+        elif result.get("status") == "error":
+            unresolved_next_steps = result.get("error", "")
         record = {
             "task_id": task_id,
             "user_task": user_task,
@@ -212,5 +394,14 @@ class LocalPilotAgent:
             "browser_actions": browser_actions,
             "steps": steps,
             "status": result.get("status", "error"),
+            "summary": (
+                f"User asked: {user_task}\n"
+                f"Tools: {', '.join(tool_names) if tool_names else 'none'}\n"
+                f"Outcome: {result.get('status', 'unknown')} | {result.get('message') or result.get('error', '')}\n"
+                f"Files changed: {len([path for path in files_changed if path])}\n"
+                f"Browser actions: {len(browser_actions)}\n"
+                f"Unresolved next steps: {unresolved_next_steps or 'none'}"
+            ),
+            "unresolved_next_steps": unresolved_next_steps,
         }
         result["session_path"] = self.memory_store.save_session(record)

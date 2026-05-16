@@ -32,6 +32,7 @@ from app.router import KeywordRouter
 from app.safety import SafetyManager
 from app.system_doctor import build_system_doctor_report
 from app.task_state import TaskStateStore
+from app.timer_tool import TimerManager
 from app.tools.desktop_lessons import DesktopLessonStore
 from app.tools.screen import take_screenshot
 from app.tools.test_runner import TestRunner
@@ -102,6 +103,7 @@ def run_agent_cli(root_dir: str | Path) -> int:
         root_path / settings.get("memory_dir", "memory"),
         root_path / "config" / "capabilities.json",
     )
+    timers = TimerManager(root_path / settings.get("memory_dir", "memory") / "timers.json")
     lmstudio_settings = settings.get("lmstudio", {})
     lmstudio_client = LMStudioClient(
         host=lmstudio_settings.get("host", "http://localhost:1234/v1"),
@@ -118,6 +120,7 @@ def run_agent_cli(root_dir: str | Path) -> int:
         lmstudio_client=lmstudio_client,
         checkpoint_manager=checkpoints,
         memory_store=memory,
+        timer_manager=timers,
     )
     agent = LocalPilotAgent(
         llm_client=lmstudio_client,
@@ -141,7 +144,11 @@ def run_agent_cli(root_dir: str | Path) -> int:
         if user_text.lower() in {"exit", "quit"}:
             return 0
 
-        result = agent.run_task(user_text)
+        try:
+            result = agent.run_task(user_text)
+        except Exception as exc:
+            safe_console_print(f"\nAgent error:\n{exc}")
+            continue
         for step in result.get("transcript", []):
             if step["type"] == "tool_call":
                 safe_console_print("\nAI tool call:")
@@ -180,6 +187,7 @@ class LocalPilotApp:
         )
         self.desktop_lessons = DesktopLessonStore(self.root_dir / self.settings["memory_dir"] / "desktop_lessons.jsonl")
         self.capabilities = self.memory.load_capabilities()
+        self.timers = TimerManager(self.root_dir / self.settings["memory_dir"] / "timers.json")
         self.system_prompt = build_system_prompt(self.capabilities)
         self.router = KeywordRouter()
         self.ollama = OllamaClient(
@@ -213,6 +221,7 @@ class LocalPilotApp:
             lmstudio_client=self.lmstudio,
             checkpoint_manager=self.checkpoints,
             memory_store=self.memory,
+            timer_manager=self.timers,
         )
         self.agent = LocalPilotAgent(
             llm_client=self.lmstudio,
@@ -421,9 +430,11 @@ class LocalPilotApp:
         return self.test_runner.cancel()
 
     def process_user_input(self, user_text: str, requested_mode: str | None = None) -> dict[str, Any]:
-        followup_request = self._process_pending_followup(user_text)
-        if followup_request is not None:
-            return followup_request
+        normalized_mode = (requested_mode or "").strip().lower()
+        if normalized_mode != "agent":
+            followup_request = self._process_pending_followup(user_text)
+            if followup_request is not None:
+                return followup_request
 
         if self.safety.is_broad_destructive_request(user_text):
             self.logger.event("Safety", "Destructive request blocked", user_text=user_text)
@@ -736,9 +747,9 @@ class LocalPilotGUI:
     def __init__(self, app: LocalPilotApp) -> None:
         self.app = app
         self.root = tk.Tk()
-        self.root.title("LocalPilot")
-        self.root.geometry("1240x820")
-        self.root.minsize(1100, 760)
+        self.root.title("LocalPilot // Codex Console")
+        self.root.geometry("1320x860")
+        self.root.minsize(1180, 780)
         self.event_queue: "queue.Queue[dict[str, Any]]" = queue.Queue()
         self.desktop_overlay: tk.Toplevel | None = None
         self.desktop_overlay_action_label: tk.Label | None = None
@@ -750,6 +761,118 @@ class LocalPilotGUI:
         self._refresh_status_bar()
         self.root.after(150, self._drain_events)
 
+    def _font_token(self) -> str:
+        return "Cascadia Mono"
+
+    def _font_ui(self) -> str:
+        return "Segoe UI"
+
+    def _build_status_chip(self, parent: tk.Frame, label: str, variable: tk.StringVar) -> tk.Frame:
+        chip = tk.Frame(
+            parent,
+            bg=self.colors["panel_alt"],
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground=self.colors["line"],
+        )
+        tk.Frame(chip, bg=self.colors["accent"], height=2).grid(row=0, column=0, sticky="ew")
+        chip.grid_columnconfigure(0, weight=1)
+        tk.Label(
+            chip,
+            text=label.upper(),
+            font=(self._font_token(), 8, "bold"),
+            fg=self.colors["muted"],
+            bg=self.colors["panel_alt"],
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", padx=10, pady=(7, 0))
+        tk.Label(
+            chip,
+            textvariable=variable,
+            font=(self._font_ui(), 10, "bold"),
+            fg=self.colors["accent"],
+            bg=self.colors["panel_alt"],
+            anchor="w",
+        ).grid(row=2, column=0, sticky="w", padx=10, pady=(2, 8))
+        return chip
+
+    def _make_card(self, parent: tk.Widget, *, padx: int = 0, pady: int = 0) -> tk.Frame:
+        card = tk.Frame(
+            parent,
+            bg=self.colors["panel"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.colors["line"],
+        )
+        if isinstance(parent, tk.Misc):
+            card.pack_propagate(False)
+        if padx or pady:
+            card.pack(padx=padx, pady=pady)
+        return card
+
+    def _build_signal_badge(self, parent: tk.Frame, text: str, tone: str = "accent") -> tk.Frame:
+        badge = tk.Frame(
+            parent,
+            bg=self.colors["surface"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.colors["line"],
+            padx=10,
+            pady=6,
+        )
+        tk.Label(
+            badge,
+            text=text,
+            font=(self._font_token(), 9, "bold"),
+            fg=self.colors.get(tone, self.colors["accent"]),
+            bg=self.colors["surface"],
+            anchor="w",
+        ).pack(anchor="w")
+        return badge
+
+    def _build_section_heading(
+        self,
+        parent: tk.Frame,
+        eyebrow: str,
+        title: str,
+        subtitle: str,
+        *,
+        right_text: str | None = None,
+        right_tone: str = "success",
+    ) -> tk.Frame:
+        row = tk.Frame(parent, bg=parent.cget("bg"))
+        row.grid_columnconfigure(0, weight=1)
+        copy = tk.Frame(row, bg=parent.cget("bg"))
+        copy.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            copy,
+            text=eyebrow,
+            font=(self._font_token(), 8, "bold"),
+            fg=self.colors["accent"],
+            bg=parent.cget("bg"),
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            copy,
+            text=title,
+            font=(self._font_token(), 15, "bold"),
+            fg=self.colors["text"],
+            bg=parent.cget("bg"),
+            anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+        tk.Label(
+            copy,
+            text=subtitle,
+            font=(self._font_ui(), 10),
+            fg=self.colors["muted"],
+            bg=parent.cget("bg"),
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        if right_text:
+            badge = self._build_signal_badge(row, right_text, tone=right_tone)
+            badge.grid(row=0, column=1, sticky="e", padx=(16, 0))
+        return row
+
     def _build_widgets(self) -> None:
         theme = self.app.settings.get("ui", {}).get("theme", "dark")
         colors = self._theme_colors(theme)
@@ -758,16 +881,82 @@ class LocalPilotGUI:
         self.style = ttk.Style()
         self.style.theme_use("clam")
         self.style.configure("Status.TFrame", background=colors["panel"])
-        self.style.configure("StatusLabel.TLabel", background=colors["panel"], foreground=colors["text"], font=("Segoe UI", 10))
-        self.style.configure("StatusValue.TLabel", background=colors["panel"], foreground=colors["accent"], font=("Segoe UI", 10, "bold"))
-        self.style.configure("ModeSelect.TCombobox", fieldbackground=colors["surface"], background=colors["surface"], foreground=colors["text"])
-        self.style.configure("Tabs.TNotebook", background=colors["bg"], borderwidth=0)
-        self.style.configure("Tabs.TNotebook.Tab", font=("Segoe UI", 10), padding=(14, 8), background=colors["panel"], foreground=colors["muted"])
-        self.style.map("Tabs.TNotebook.Tab", background=[("selected", colors["surface"])], foreground=[("selected", colors["text"])])
-        self.style.configure("Action.TButton", font=("Segoe UI", 10), padding=(10, 8))
+        self.style.configure("StatusLabel.TLabel", background=colors["panel"], foreground=colors["text"], font=(self._font_ui(), 10))
+        self.style.configure("StatusValue.TLabel", background=colors["panel"], foreground=colors["accent"], font=(self._font_ui(), 10, "bold"))
+        self.style.configure(
+            "ModeSelect.TCombobox",
+            fieldbackground=colors["panel_alt"],
+            background=colors["panel_alt"],
+            foreground=colors["text"],
+            bordercolor=colors["line"],
+            lightcolor=colors["line"],
+            darkcolor=colors["line"],
+            arrowcolor=colors["accent"],
+            padding=(8, 6),
+            font=(self._font_token(), 10),
+        )
+        self.style.map(
+            "ModeSelect.TCombobox",
+            fieldbackground=[("readonly", colors["panel_alt"])],
+            foreground=[("readonly", colors["text"])],
+            selectbackground=[("readonly", colors["panel_alt"])],
+            selectforeground=[("readonly", colors["text"])],
+        )
+        self.style.configure("Tabs.TNotebook", background=colors["bg"], borderwidth=0, tabmargins=(0, 0, 0, 0))
+        self.style.configure(
+            "Tabs.TNotebook.Tab",
+            font=(self._font_token(), 9, "bold"),
+            padding=(18, 11),
+            background=colors["panel_alt"],
+            foreground=colors["muted"],
+            borderwidth=0,
+        )
+        self.style.map(
+            "Tabs.TNotebook.Tab",
+            background=[("selected", colors["surface"])],
+            foreground=[("selected", colors["accent"])],
+        )
+        self.style.configure(
+            "Action.TButton",
+            font=(self._font_token(), 10, "bold"),
+            padding=(14, 10),
+            background=colors["accent"],
+            foreground=colors["ink_dark"],
+            borderwidth=0,
+            focuscolor=colors["panel_alt"],
+        )
+        self.style.map(
+            "Action.TButton",
+            background=[("active", colors["accent_soft"]), ("pressed", colors["accent_soft"])],
+            foreground=[("active", colors["ink_dark"]), ("pressed", colors["ink_dark"])],
+        )
+        self.style.configure(
+            "Ghost.TButton",
+            font=(self._font_token(), 9, "bold"),
+            padding=(10, 9),
+            background=colors["panel_alt"],
+            foreground=colors["text"],
+            borderwidth=0,
+            focuscolor=colors["panel_alt"],
+        )
+        self.style.map(
+            "Ghost.TButton",
+            background=[("active", colors["surface"]), ("pressed", colors["surface"])],
+            foreground=[("active", colors["accent"]), ("pressed", colors["accent"])],
+        )
 
-        header = ttk.Frame(self.root, style="Status.TFrame", padding=(14, 12))
-        header.pack(fill="x", padx=14, pady=(14, 10))
+        header = tk.Frame(
+            self.root,
+            bg=colors["panel"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["line"],
+            padx=18,
+            pady=16,
+        )
+        header.pack(fill="x", padx=16, pady=(16, 12))
+        header.grid_columnconfigure(0, weight=1)
+        header.grid_columnconfigure(1, weight=1)
 
         self.mode_var = tk.StringVar(value="idle")
         self.role_var = tk.StringVar(value="idle")
@@ -777,7 +966,58 @@ class LocalPilotGUI:
         self.browser_var = tk.StringVar(value="idle")
         self.safety_var = tk.StringVar(value="Guarded")
         self.running_var = tk.StringVar(value="idle")
+        self.route_summary_var = tk.StringVar(value="AUTO ROUTE // ready for task dispatch")
 
+        branding = tk.Frame(header, bg=colors["panel"])
+        branding.grid(row=0, column=0, sticky="nw")
+        tk.Label(
+            branding,
+            text="LOCALPILOT",
+            font=(self._font_token(), 24, "bold"),
+            fg=colors["accent"],
+            bg=colors["panel"],
+            anchor="w",
+        ).pack(anchor="w")
+        tk.Label(
+            branding,
+            text="codex-style local agent console",
+            font=(self._font_ui(), 11),
+            fg=colors["muted"],
+            bg=colors["panel"],
+            anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        tk.Label(
+            branding,
+            text="guarded execution • persistent memory • local browser + tools",
+            font=(self._font_token(), 9),
+            fg=colors["success"],
+            bg=colors["panel"],
+            anchor="w",
+        ).pack(anchor="w", pady=(10, 0))
+        signal_row = tk.Frame(branding, bg=colors["panel"])
+        signal_row.pack(anchor="w", pady=(12, 0))
+        for index, (text, tone) in enumerate(
+            [
+                ("AI AGENT", "accent"),
+                ("GUARDED", "success"),
+                ("LOCAL TOOLS", "success"),
+            ]
+        ):
+            badge = self._build_signal_badge(signal_row, text, tone=tone)
+            badge.grid(row=0, column=index, sticky="w", padx=(0, 8))
+        tk.Label(
+            branding,
+            textvariable=self.route_summary_var,
+            font=(self._font_token(), 9),
+            fg=colors["success"],
+            bg=colors["panel"],
+            anchor="w",
+        ).pack(anchor="w", pady=(12, 0))
+
+        status_grid = tk.Frame(header, bg=colors["panel"])
+        status_grid.grid(row=0, column=1, sticky="ne", padx=(18, 0))
+        for column in range(4):
+            status_grid.grid_columnconfigure(column, weight=1)
         status_items = [
             ("Mode", self.mode_var),
             ("Role", self.role_var),
@@ -789,20 +1029,21 @@ class LocalPilotGUI:
             ("Running", self.running_var),
         ]
         for index, (label, variable) in enumerate(status_items):
-            item = ttk.Frame(header, style="Status.TFrame")
-            item.grid(row=0, column=index, sticky="w", padx=(0, 18))
-            ttk.Label(item, text=f"{label}:", style="StatusLabel.TLabel").pack(side="left")
-            ttk.Label(item, textvariable=variable, style="StatusValue.TLabel").pack(side="left", padx=(6, 0))
+            row = index // 4
+            column = index % 4
+            chip = self._build_status_chip(status_grid, label, variable)
+            chip.grid(row=row, column=column, sticky="ew", padx=6, pady=6)
 
         body = tk.PanedWindow(
             self.root,
             orient=tk.HORIZONTAL,
-            sashrelief=tk.RAISED,
+            sashrelief=tk.FLAT,
             bg=colors["bg"],
-            sashwidth=8,
+            sashwidth=10,
             bd=0,
+            opaqueresize=True,
         )
-        body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
         left = tk.Frame(body, bg=colors["bg"])
         right = tk.Frame(body, bg=colors["bg"])
@@ -813,18 +1054,44 @@ class LocalPilotGUI:
         right.grid_rowconfigure(0, weight=1)
         right.grid_columnconfigure(0, weight=1)
 
-        tk.Label(
+        conversation_shell = tk.Frame(
             left,
-            text="Conversation",
-            font=("Segoe UI", 11, "bold"),
-            bg=colors["bg"],
-            fg=colors["text"],
-        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+            bg=colors["panel"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["line"],
+            padx=16,
+            pady=16,
+        )
+        conversation_shell.grid(row=0, column=0, rowspan=3, sticky="nsew")
+        conversation_shell.grid_rowconfigure(1, weight=1)
+        conversation_shell.grid_columnconfigure(0, weight=1)
+
+        title_row = self._build_section_heading(
+            conversation_shell,
+            eyebrow="LIVE SESSION",
+            title="AGENT CONSOLE",
+            subtitle="Task-first chat with tools, approvals, and real execution trace.",
+            right_text="ENTER TO DISPATCH",
+        )
+        title_row.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+
+        console_frame = tk.Frame(
+            conversation_shell,
+            bg=colors["surface"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["line"],
+        )
+        console_frame.grid(row=1, column=0, sticky="nsew")
+        console_frame.grid_rowconfigure(1, weight=1)
+        console_frame.grid_columnconfigure(0, weight=1)
+        tk.Frame(console_frame, bg=colors["accent"], height=2).grid(row=0, column=0, sticky="ew")
         self.output = scrolledtext.ScrolledText(
-            left,
+            console_frame,
             wrap=tk.WORD,
             height=20,
-            font=("Segoe UI", 11),
+            font=(self._font_ui(), 11),
             bg=colors["surface"],
             fg=colors["text"],
             insertbackground=colors["text"],
@@ -834,28 +1101,56 @@ class LocalPilotGUI:
             pady=14,
             spacing1=6,
             spacing3=10,
+            selectbackground=colors["accent_soft"],
+            selectforeground=colors["ink_dark"],
         )
         self.output.grid(row=1, column=0, sticky="nsew")
         self.output.configure(state="disabled")
-        self.output.tag_configure("user", font=("Segoe UI", 11, "bold"), foreground=colors["accent"])
-        self.output.tag_configure("assistant", font=("Segoe UI", 11, "bold"), foreground=colors["success"])
-        self.output.tag_configure("body", font=("Segoe UI", 11), foreground=colors["text"])
-        self.output.tag_configure("error", font=("Segoe UI", 11), foreground=colors["danger"])
+        self.output.tag_configure("user", font=(self._font_token(), 10, "bold"), foreground=colors["accent"], spacing1=8, spacing3=2)
+        self.output.tag_configure("assistant", font=(self._font_token(), 10, "bold"), foreground=colors["success"], spacing1=8, spacing3=2)
+        self.output.tag_configure("body", font=(self._font_ui(), 11), foreground=colors["text"], lmargin1=4, lmargin2=4, spacing3=12)
+        self.output.tag_configure("error", font=(self._font_ui(), 11), foreground=colors["danger"], lmargin1=4, lmargin2=4, spacing3=12)
 
-        input_frame = tk.Frame(left, bg=colors["bg"])
-        input_frame.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        input_frame = tk.Frame(
+            conversation_shell,
+            bg=colors["panel_alt"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["line"],
+            padx=12,
+            pady=12,
+        )
+        input_frame.grid(row=2, column=0, sticky="ew", pady=(14, 0))
         input_frame.grid_columnconfigure(0, weight=1)
+        input_frame.grid_columnconfigure(2, minsize=120)
+        tk.Label(
+            input_frame,
+            text="TASK",
+            font=(self._font_token(), 9, "bold"),
+            fg=colors["muted"],
+            bg=colors["panel_alt"],
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        tk.Label(
+            input_frame,
+            text="MODE",
+            font=(self._font_token(), 9, "bold"),
+            fg=colors["muted"],
+            bg=colors["panel_alt"],
+        ).grid(row=0, column=1, sticky="w", padx=(12, 0), pady=(0, 8))
         self.input_mode_var = tk.StringVar(value="auto")
         self.input_entry = tk.Entry(
             input_frame,
-            font=("Segoe UI", 11),
+            font=(self._font_ui(), 11),
             bg=colors["surface"],
             fg=colors["text"],
             insertbackground=colors["text"],
             relief="flat",
             bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["line"],
+            highlightcolor=colors["accent"],
         )
-        self.input_entry.grid(row=0, column=0, sticky="ew")
+        self.input_entry.grid(row=1, column=0, sticky="ew")
         self.input_entry.bind("<Return>", lambda _event: self.submit_input())
         self.mode_selector = ttk.Combobox(
             input_frame,
@@ -865,13 +1160,43 @@ class LocalPilotGUI:
             width=10,
             style="ModeSelect.TCombobox",
         )
-        self.mode_selector.grid(row=0, column=1, padx=(10, 0))
+        self.mode_selector.grid(row=1, column=1, padx=(12, 0), sticky="ew")
         self.mode_selector.bind("<<ComboboxSelected>>", lambda _event: self._on_mode_selected())
-        send_button = ttk.Button(input_frame, text="Send", command=self.submit_input, style="Action.TButton")
-        send_button.grid(row=0, column=2, padx=(10, 0))
+        send_button = ttk.Button(input_frame, text="Dispatch", command=self.submit_input, style="Action.TButton")
+        send_button.grid(row=1, column=2, padx=(12, 0), sticky="ew")
+        tk.Label(
+            input_frame,
+            text="Try: describe my screen briefly | search the web for cats | set a timer for 5 minutes",
+            font=(self._font_ui(), 9),
+            fg=colors["muted"],
+            bg=colors["panel_alt"],
+            anchor="w",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
-        notebook = ttk.Notebook(right, style="Tabs.TNotebook")
-        notebook.grid(row=0, column=0, sticky="nsew")
+        telemetry_shell = tk.Frame(
+            right,
+            bg=colors["panel"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=colors["line"],
+            padx=16,
+            pady=16,
+        )
+        telemetry_shell.grid(row=0, column=0, sticky="nsew")
+        telemetry_shell.grid_rowconfigure(1, weight=1)
+        telemetry_shell.grid_columnconfigure(0, weight=1)
+
+        ops_header = self._build_section_heading(
+            telemetry_shell,
+            eyebrow="TELEMETRY",
+            title="OPS DECK",
+            subtitle="Activity, memory, logs, timers, and operator shortcuts.",
+            right_text="LIVE LOGS",
+        )
+        ops_header.grid(row=0, column=0, sticky="ew")
+
+        notebook = ttk.Notebook(telemetry_shell, style="Tabs.TNotebook")
+        notebook.grid(row=1, column=0, sticky="nsew", pady=(14, 0))
 
         activity_tab = tk.Frame(notebook, bg=colors["bg"])
         logs_tab = tk.Frame(notebook, bg=colors["bg"])
@@ -974,7 +1299,7 @@ class LocalPilotGUI:
     def _append_chat_message(self, speaker: str, text: str, speaker_tag: str, body_tag: str = "body") -> None:
         widget = self.output
         widget.configure(state="normal")
-        widget.insert(tk.END, f"{speaker}\n", (speaker_tag,))
+        widget.insert(tk.END, f"[{speaker.upper()}]\n", (speaker_tag,))
         widget.insert(tk.END, f"{text}\n\n", (body_tag,))
         widget.see(tk.END)
         widget.configure(state="disabled")
@@ -984,7 +1309,7 @@ class LocalPilotGUI:
             parent,
             wrap=tk.WORD,
             height=height,
-            font=("Segoe UI", 10),
+            font=(self._font_token(), 10),
             bg=self.colors["surface"],
             fg=self.colors["text"],
             insertbackground=self.colors["text"],
@@ -992,8 +1317,20 @@ class LocalPilotGUI:
             bd=0,
             padx=12,
             pady=12,
+            spacing1=2,
+            spacing3=8,
+            selectbackground=self.colors["accent_soft"],
+            selectforeground=self.colors["ink_dark"],
         )
-        text.pack(fill="both", expand=True, padx=2, pady=2)
+        shell = tk.Frame(
+            parent,
+            bg=self.colors["surface"],
+            bd=0,
+            highlightthickness=1,
+            highlightbackground=self.colors["line"],
+        )
+        shell.pack(fill="both", expand=True, padx=2, pady=2)
+        text.pack(in_=shell, fill="both", expand=True, padx=0, pady=0)
         text.configure(state="disabled")
         return text
 
@@ -1001,19 +1338,62 @@ class LocalPilotGUI:
         container = tk.Frame(parent, bg=self.colors["bg"])
         container.pack(fill="both", expand=True, padx=8, pady=8)
 
-        actions = [
-            ("Refresh Memory", self._load_memory_panel),
-            ("Show Notes", lambda: self.submit_text("show notes")),
-            ("Take Screenshot", lambda: self.submit_text("take screenshot")),
-            ("Mouse Position", lambda: self.submit_text("get mouse position")),
-            ("Run Pytest", lambda: self.submit_text("run pytest")),
-            ("Cancel Tests", lambda: self.submit_text("cancel tests")),
-            ("Open Last Debug Image", self.open_last_debug_image),
-            ("Clear Chat", self.clear_chat),
+        header = self._build_section_heading(
+            container,
+            eyebrow="OPERATOR KIT",
+            title="QUICK ACTIONS",
+            subtitle="Shortcuts for memory, timers, desktop inspection, tests, and session cleanup.",
+        )
+        header.pack(fill="x", pady=(0, 14))
+
+        action_groups = [
+            (
+                "SESSION",
+                [
+                    ("Refresh Memory", self._load_memory_panel),
+                    ("Clear Chat", self.clear_chat),
+                    ("Show Notes", lambda: self.submit_text("show notes")),
+                ],
+            ),
+            (
+                "DESKTOP",
+                [
+                    ("Take Screenshot", lambda: self.submit_text("take screenshot")),
+                    ("Mouse Position", lambda: self.submit_text("get mouse position")),
+                    ("Open Last Debug Image", self.open_last_debug_image),
+                ],
+            ),
+            (
+                "AUTOMATION",
+                [
+                    ("List Timers", lambda: self.submit_text("list my timers")),
+                    ("Run Pytest", lambda: self.submit_text("run pytest")),
+                    ("Cancel Tests", lambda: self.submit_text("cancel tests")),
+                ],
+            ),
         ]
-        for label, command in actions:
-            button = ttk.Button(container, text=label, command=command, style="Action.TButton")
-            button.pack(fill="x", pady=6)
+        for group_name, actions in action_groups:
+            group = tk.Frame(
+                container,
+                bg=self.colors["panel"],
+                bd=0,
+                highlightthickness=1,
+                highlightbackground=self.colors["line"],
+                padx=12,
+                pady=12,
+            )
+            group.pack(fill="x", pady=(0, 10))
+            tk.Label(
+                group,
+                text=group_name,
+                font=(self._font_token(), 9, "bold"),
+                fg=self.colors["accent"],
+                bg=self.colors["panel"],
+                anchor="w",
+            ).pack(fill="x", pady=(0, 10))
+            for label, command in actions:
+                button = ttk.Button(group, text=label, command=command, style="Ghost.TButton")
+                button.pack(fill="x", pady=4)
 
     def clear_chat(self) -> None:
         self.output.configure(state="normal")
@@ -1021,7 +1401,7 @@ class LocalPilotGUI:
         self.output.configure(state="disabled")
         self._append_chat_message(
             "LocalPilot",
-            "Chat cleared. Ask me something or use the quick tools on the right.",
+            "Console cleared. Dispatch a new task, review memory, or use an operator shortcut from the ops deck.",
             speaker_tag="assistant",
         )
 
@@ -1052,6 +1432,15 @@ class LocalPilotGUI:
             self.safety_var.set("Guarded")
         if hasattr(self, "running_var") and not self.running_var.get():
             self.running_var.set("idle")
+        if hasattr(self, "route_summary_var"):
+            route_name = (selected_mode or "auto").upper()
+            brain = self.main_model_var.get() or "n/a"
+            vision = self.vision_model_var.get() or "n/a"
+            browser = self.browser_var.get() if hasattr(self, "browser_var") else "idle"
+            safety = self.safety_var.get() or "Guarded"
+            self.route_summary_var.set(
+                f"{route_name} ROUTE // brain {brain} // vision {vision} // browser {browser} // safety {safety}"
+            )
 
     def _display_model_name(self, model_name: str) -> str:
         return model_name.replace("-instruct", "")
@@ -1078,9 +1467,10 @@ class LocalPilotGUI:
             if step_type == "tool_call":
                 self._append_chat_message("Agent Tool Call", json.dumps(payload, indent=2), speaker_tag="assistant")
             elif step_type == "tool_result":
+                rendered_payload = self._format_agent_tool_result(payload)
                 self._append_chat_message(
                     "Tool Result",
-                    json.dumps(payload, indent=2),
+                    rendered_payload,
                     speaker_tag="assistant",
                     body_tag="error" if not payload.get("ok") else "body",
                 )
@@ -1097,6 +1487,33 @@ class LocalPilotGUI:
             )
         if result.get("error"):
             self._append_chat_message("Agent Error", result["error"], speaker_tag="assistant", body_tag="error")
+
+    def _format_agent_tool_result(self, payload: dict[str, Any]) -> str:
+        tool_name = str(payload.get("tool", ""))
+        if tool_name == "desktop_suggest_action" and payload.get("ok"):
+            result = payload.get("result") or {}
+            confidence = float(result.get("confidence", 0.0) or 0.0)
+            lines = [
+                "Suggested desktop action:",
+                f"Action: {result.get('action', 'unknown')}",
+                f"Target: {result.get('target', 'unknown')}",
+                f"Coordinates: x={result.get('x', '?')}, y={result.get('y', '?')}",
+                f"Confidence: {confidence:.0%}",
+                f"Risk: {result.get('risk', 'unknown')}",
+                f"Reason: {result.get('reason', '')}",
+            ]
+            warning = str(result.get("warning", "")).strip()
+            if warning:
+                lines.append(f"Warning: {warning}")
+            lines.append("No action was executed.")
+            return "\n".join(lines)
+        if tool_name == "desktop_move_mouse_preview" and payload.get("ok"):
+            result = payload.get("result") or {}
+            coordinates = f"({result.get('x', '?')}, {result.get('y', '?')})"
+            target = str(result.get("target", "")).strip()
+            suffix = f" near {target}" if target else ""
+            return f"Mouse moved for preview only{suffix} at {coordinates}. No click was performed."
+        return json.dumps(payload, indent=2)
 
     def _append_safety_event_to_chat(self, message: str, extra: dict[str, Any]) -> None:
         if not hasattr(self, "output"):
@@ -1126,7 +1543,27 @@ class LocalPilotGUI:
     def _build_memory_panel_content(self) -> str:
         notes = self.app.memory.show_notes().strip()
         sessions = self.app.memory.list_session_summaries(limit=6)
+        current_task = self.app.memory.load_current_task() if hasattr(self.app.memory, "load_current_task") else None
+        active_timers = self.app.timers.list_timers().get("timers", []) if hasattr(self.app, "timers") else []
         parts = [notes or "# LocalPilot Notes"]
+        parts.append("\nCurrent Task\n")
+        if current_task is None:
+            parts.append("No active task saved.")
+        else:
+            parts.append(f"Task: {current_task.get('original_user_task', '')}")
+            parts.append(f"Status: {current_task.get('status', '')}")
+            parts.append(f"Latest message: {current_task.get('latest_user_message', '')}")
+            last_tool = current_task.get("last_tool_call") or {}
+            if isinstance(last_tool, dict) and last_tool.get("tool"):
+                parts.append(f"Last tool: {last_tool.get('tool')}")
+        parts.append("\nActive Timers\n")
+        if not active_timers:
+            parts.append("No active timers.")
+        else:
+            for timer in active_timers[:6]:
+                parts.append(
+                    f"- {timer.get('label', 'Timer')} | fires at {timer.get('fires_at', '')} | id={timer.get('timer_id', '')}"
+                )
         parts.append("\nRecent Sessions\n")
         if not sessions:
             parts.append("No saved sessions yet.")
@@ -1196,10 +1633,10 @@ class LocalPilotGUI:
     def _load_default_panels(self) -> None:
         self._append_chat_message(
             "LocalPilot",
-            "Ready. Try `what can you do`, `show notes`, or use the Tools tab for quick actions.",
+            "Console online. Switch to `agent` mode for the full tool-driven pilot, or dispatch a task from any route.",
             speaker_tag="assistant",
         )
-        self._append_readonly(self.logs, "Recent logs will appear here as the session runs.\n")
+        self._append_readonly(self.logs, "Telemetry stream armed.\nWaiting for tool calls, approvals, tests, and memory updates...\n")
 
     def _build_approval_window(self, prompt: Any, approved: dict[str, bool], done: threading.Event) -> tk.Toplevel:
         if self.approval_window is not None and self.approval_window.winfo_exists():
@@ -1332,24 +1769,32 @@ class LocalPilotGUI:
     def _theme_colors(self, theme: str) -> dict[str, str]:
         if theme == "light":
             return {
-                "bg": "#edf1f5",
-                "panel": "#dce5ef",
+                "bg": "#edf3f8",
+                "panel": "#dde8f1",
+                "panel_alt": "#f8fbfe",
                 "surface": "#ffffff",
-                "text": "#16212e",
+                "text": "#14202c",
                 "muted": "#5b6774",
-                "accent": "#185ea8",
+                "accent": "#0f7bc0",
+                "accent_soft": "#9fe1ff",
                 "success": "#18794e",
                 "danger": "#b42318",
+                "line": "#c1d0df",
+                "ink_dark": "#08131d",
             }
         return {
-            "bg": "#0f141b",
-            "panel": "#18202a",
-            "surface": "#1f2935",
-            "text": "#f3f6fb",
-            "muted": "#a2afbf",
-            "accent": "#61b0ff",
-            "success": "#6fd3a5",
-            "danger": "#ff8f8f",
+            "bg": "#060b11",
+            "panel": "#0b1219",
+            "panel_alt": "#101a25",
+            "surface": "#0d1620",
+            "text": "#edf6ff",
+            "muted": "#8aa0b5",
+            "accent": "#74ddff",
+            "accent_soft": "#b9f0ff",
+            "success": "#8ef1be",
+            "danger": "#ff9191",
+            "line": "#223445",
+            "ink_dark": "#031019",
         }
 
     def show_desktop_busy_overlay(self, action_name: str) -> None:

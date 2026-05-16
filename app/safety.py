@@ -60,6 +60,25 @@ BROWSER_DANGEROUS_PATTERNS = [
     r"\bmessage\b",
 ]
 
+DESKTOP_SENSITIVE_PATTERNS = [
+    r"\bpassword\b",
+    r"\blog in\b",
+    r"\blogin\b",
+    r"\bsign in\b",
+    r"\bcheckout\b",
+    r"\bpayment\b",
+    r"\bbuy\b",
+    r"\bpurchase\b",
+    r"\bsend\b",
+    r"\bemail\b",
+    r"\bmessage\b",
+    r"\bdelete\b",
+    r"\bconfirm\b",
+    r"\bsettings\b",
+    r"\badmin\b",
+    r"\buac\b",
+]
+
 BROAD_DESTRUCTIVE_PATTERNS = [
     r"\bdelete everything\b",
     r"\bwipe (?:the )?(?:folder|workspace|directory|drive)\b",
@@ -138,11 +157,37 @@ class SafetyManager:
         payload = dict(args or {})
         path_value = payload.get("path") or payload.get("cwd") or payload.get("target")
 
-        if tool_name in {"take_screenshot", "analyze_screenshot", "ask_user_approval", "list_checkpoints", "list_sessions", "read_session"}:
+        if tool_name in {
+            "take_screenshot",
+            "analyze_screenshot",
+            "desktop_get_screen_size",
+            "desktop_get_mouse_position",
+            "desktop_suggest_action",
+            "ask_user_approval",
+            "list_checkpoints",
+            "list_sessions",
+            "read_session",
+            "get_current_task",
+            "update_current_task",
+            "clear_current_task",
+            "summarize_recent_sessions",
+            "set_timer",
+            "list_timers",
+            "cancel_timer",
+        }:
             return SafetyDecision(RISK_SAFE, False, True, "Read-only observation tool.")
 
         if tool_name == "restore_checkpoint":
             return SafetyDecision(RISK_DANGEROUS, True, True, "Restoring a checkpoint modifies files and requires approval.")
+
+        if tool_name == "desktop_move_mouse_preview":
+            confidence = float(payload.get("confidence", 1.0) or 0.0)
+            target_text = " ".join(str(payload.get(key, "")) for key in ("target", "reason", "context")).lower()
+            if confidence < 0.60:
+                return SafetyDecision(RISK_BLOCKED, False, False, "Desktop preview is blocked because the suggested target confidence is below 0.60.")
+            if any(re.search(pattern, target_text) for pattern in DESKTOP_SENSITIVE_PATTERNS):
+                return SafetyDecision(RISK_DANGEROUS, True, True, "Sensitive desktop target requires explicit approval.")
+            return SafetyDecision(RISK_MEDIUM, True, True, "Mouse preview movement requires approval.")
 
         if tool_name in {"list_files", "read_file"}:
             if path_value is None or self.is_path_within_workspace(path_value):

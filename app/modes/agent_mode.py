@@ -8,7 +8,20 @@ class AgentMode:
         self.app = app
 
     def handle(self, request: dict[str, Any]) -> dict[str, Any]:
-        result = self.app.agent.run_task(request["user_text"].strip())
+        try:
+            result = self.app.agent.run_task(request["user_text"].strip())
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "error",
+                "message": "",
+                "error": str(exc),
+                "transcript": [],
+                "steps": [],
+                "brain_model": self.app.lmstudio.default_text_model,
+                "vision_model": self.app.lmstudio.default_vision_model,
+                "browser_backend": "Puppeteer",
+            }
         payload: dict[str, Any] = {
             "ok": bool(result.get("ok")),
             "status": result.get("status", "error"),

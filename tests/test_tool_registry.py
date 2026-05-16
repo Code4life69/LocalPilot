@@ -12,10 +12,11 @@ class FakeVisionClient:
 
     def __init__(self):
         self.calls = []
+        self.response_text = "A screenshot of a code editor."
 
-    def chat_vision(self, prompt, image_path, model):
-        self.calls.append({"prompt": prompt, "image_path": str(image_path), "model": model})
-        return "A screenshot of a code editor."
+    def chat_vision(self, prompt, image_path, model, max_tokens=None):
+        self.calls.append({"prompt": prompt, "image_path": str(image_path), "model": model, "max_tokens": max_tokens})
+        return self.response_text
 
 
 class FakeBrowserBridge:
@@ -65,6 +66,17 @@ def test_tool_registry_registers_expected_builtin_tools(tmp_path):
         "restore_checkpoint",
         "list_sessions",
         "read_session",
+        "get_current_task",
+        "update_current_task",
+        "clear_current_task",
+        "summarize_recent_sessions",
+        "set_timer",
+        "list_timers",
+        "cancel_timer",
+        "desktop_get_screen_size",
+        "desktop_get_mouse_position",
+        "desktop_suggest_action",
+        "desktop_move_mouse_preview",
         "browser_launch",
         "browser_close",
         "browser_goto",
@@ -76,6 +88,7 @@ def test_tool_registry_registers_expected_builtin_tools(tmp_path):
         "browser_screenshot",
         "browser_get_page_info",
     }.issubset(names)
+    assert {"desktop_click", "desktop_type_text", "desktop_hotkey", "desktop_press_key"}.isdisjoint(names)
 
 
 def test_unknown_tool_returns_structured_error(tmp_path):
@@ -337,6 +350,167 @@ def test_read_session_tool_returns_saved_session(tmp_path):
 
     assert result["ok"] is True
     assert result["result"]["session"]["task_id"] == "task123"
+
+
+def test_current_task_tools_round_trip_state(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+
+    updated = registry.execute_tool_call(
+        {
+            "tool": "update_current_task",
+            "args": {"updates": {"active_task_id": "task123", "original_user_task": "build a site", "status": "active"}},
+            "reason": "save current task state",
+        }
+    )
+    loaded = registry.execute_tool_call({"tool": "get_current_task", "args": {}, "reason": "inspect current task"})
+    cleared = registry.execute_tool_call({"tool": "clear_current_task", "args": {}, "reason": "reset task state"})
+
+    assert updated["ok"] is True
+    assert loaded["result"]["current_task"]["active_task_id"] == "task123"
+    assert cleared["result"]["message"] == "Current task cleared."
+
+
+def test_summarize_recent_sessions_tool_returns_text(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+    registry.memory_store.save_session(
+        {
+            "task_id": "task123",
+            "user_task": "describe my screen",
+            "mode": "agent",
+            "start_time": "2026-05-15T17:30:00",
+            "end_time": "2026-05-15T17:30:01",
+            "status": "final",
+            "final_answer": "done",
+            "summary": "User asked: describe my screen",
+        }
+    )
+
+    result = registry.execute_tool_call({"tool": "summarize_recent_sessions", "args": {}, "reason": "recap recent work"})
+
+    assert result["ok"] is True
+    assert "describe my screen" in result["result"]["summary"]
+
+
+def test_timer_tools_round_trip(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+
+    created = registry.execute_tool_call(
+        {
+            "tool": "set_timer",
+            "args": {"duration_seconds": 300, "label": "Check food", "notify": True},
+            "reason": "The user asked for a timer.",
+        }
+    )
+    listed = registry.execute_tool_call({"tool": "list_timers", "args": {}, "reason": "inspect active timers"})
+    cancelled = registry.execute_tool_call(
+        {"tool": "cancel_timer", "args": {"timer_id": created["result"]["timer_id"]}, "reason": "cancel the timer"}
+    )
+
+    assert created["ok"] is True
+    assert listed["ok"] is True
+    assert any(timer["timer_id"] == created["result"]["timer_id"] for timer in listed["result"]["timers"])
+    assert cancelled["ok"] is True
+
+
+def test_desktop_get_screen_size_tool_returns_structured_result(tmp_path, monkeypatch):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+    monkeypatch.setattr("app.tool_registry.desktop_get_screen_size", lambda: {"ok": True, "width": 1920, "height": 1080})
+
+    result = registry.execute_tool_call({"tool": "desktop_get_screen_size", "args": {}, "reason": "inspect display bounds"})
+
+    assert result["ok"] is True
+    assert result["result"] == {"width": 1920, "height": 1080}
+
+
+def test_desktop_get_mouse_position_tool_returns_structured_result(tmp_path, monkeypatch):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+    monkeypatch.setattr("app.tool_registry.desktop_get_mouse_position", lambda: {"ok": True, "x": 50, "y": 80})
+
+    result = registry.execute_tool_call({"tool": "desktop_get_mouse_position", "args": {}, "reason": "inspect pointer"})
+
+    assert result["ok"] is True
+    assert result["result"] == {"x": 50, "y": 80}
+
+
+def test_desktop_suggest_action_returns_structured_schema(tmp_path):
+    registry, _root_dir, workspace, vision, _browser = build_registry(tmp_path)
+    image_path = workspace / "screen.png"
+    image_path.write_bytes(b"png")
+    vision.response_text = json.dumps(
+        {
+            "action": "click",
+            "target": "Google search bar",
+            "x": 735,
+            "y": 410,
+            "confidence": 0.86,
+            "risk": "medium",
+            "reason": "The user wants to search, and this appears to be the main search field.",
+        }
+    )
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_suggest_action",
+            "args": {"path": str(image_path), "instruction": "Tell me what you would click next. Do not click anything."},
+            "reason": "Suggest the next desktop action.",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["action"] == "click"
+    assert result["result"]["requires_approval_to_execute"] is True
+    assert result["result"]["executed"] is False
+
+
+def test_desktop_suggest_action_json_parse_failure_returns_structured_error(tmp_path):
+    registry, _root_dir, workspace, vision, _browser = build_registry(tmp_path)
+    image_path = workspace / "screen.png"
+    image_path.write_bytes(b"png")
+    vision.response_text = "not json"
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_suggest_action",
+            "args": {"path": str(image_path), "instruction": "Suggest the next action."},
+            "reason": "Suggest the next desktop action.",
+        }
+    )
+
+    assert result["ok"] is False
+    assert "could not parse model json" in result["error"].lower()
+
+
+def test_desktop_move_mouse_preview_requires_approval(tmp_path):
+    prompts = []
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: prompts.append(prompt) or False)
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_move_mouse_preview",
+            "args": {"x": 200, "y": 300, "target": "Search box", "confidence": 0.86},
+            "reason": "Preview the suggested desktop target.",
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "User denied approval."
+    assert prompts[0]["risk"] == "medium"
+    assert "No click will be performed" in prompts[0]["summary"]
+
+
+def test_desktop_move_mouse_preview_low_confidence_is_blocked(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_move_mouse_preview",
+            "args": {"x": 200, "y": 300, "target": "Unclear icon", "confidence": 0.42},
+            "reason": "Preview the suggested desktop target.",
+        }
+    )
+
+    assert result["ok"] is False
+    assert "below 0.60" in result["error"]
 
 
 def test_grouped_approval_plan_is_structured_and_reused(tmp_path):
