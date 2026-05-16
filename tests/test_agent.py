@@ -44,6 +44,23 @@ class FakeRegistry:
         return {"ok": True, "tool": tool_call["tool"], "result": {"path": "logs/screenshots/demo.png"}}
 
 
+class RichRegistry(FakeRegistry):
+    def execute_tool_call(self, tool_call):
+        self.calls.append(tool_call)
+        if tool_call["tool"] == "take_screenshot":
+            return {"ok": True, "tool": "take_screenshot", "result": {"path": "logs/screenshots/demo.png"}}
+        if tool_call["tool"] == "analyze_screenshot":
+            return {
+                "ok": True,
+                "tool": "analyze_screenshot",
+                "result": {
+                    "path": "logs/screenshots/demo.png",
+                    "description": "The screenshot shows the ChatGPT web interface with a left sidebar of recent chats.",
+                },
+            }
+        return super().execute_tool_call(tool_call)
+
+
 class FakeLLM:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -242,6 +259,48 @@ def test_agent_followup_continue_uses_active_task_context(tmp_path):
     first_user_message = llm.calls[0]["messages"][1]["content"]
     assert "continue the active task" in first_user_message.lower()
     assert "open Google and search cats" in first_user_message
+
+
+def test_agent_persists_tool_result_summary_and_recent_turns_for_followups(tmp_path):
+    memory_dir = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "capabilities.json").write_text("{}", encoding="utf-8")
+    memory = MemoryStore(memory_dir, config_dir / "capabilities.json")
+    first_llm = FakeLLM(
+        [
+            json.dumps({"type": "tool_call", "tool": "take_screenshot", "args": {}, "reason": "capture the screen"}),
+            json.dumps(
+                {
+                    "type": "tool_call",
+                    "tool": "analyze_screenshot",
+                    "args": {"path": "logs/screenshots/demo.png"},
+                    "reason": "understand the screen",
+                }
+            ),
+            json.dumps({"type": "final", "message": "The screen shows ChatGPT with recent chats in the sidebar."}),
+        ]
+    )
+    registry = RichRegistry()
+    agent = LocalPilotAgent(llm_client=first_llm, tool_registry=registry, memory_store=memory, root_dir=tmp_path)
+
+    first_result = agent.run_task("Describe my screen briefly.")
+
+    assert first_result["ok"] is True
+    current_task = memory.load_current_task()
+    assert current_task is not None
+    assert "Screenshot analysis:" in current_task["last_tool_result_summary"]
+    assert any(message["role"] == "assistant" for message in current_task["recent_messages"])
+
+    second_llm = FakeLLM([json.dumps({"type": "final", "message": "Continuing from the same screen context."})])
+    followup_agent = LocalPilotAgent(llm_client=second_llm, tool_registry=registry, memory_store=memory, root_dir=tmp_path)
+
+    followup_agent.run_task("continue")
+
+    system_prompt = second_llm.calls[0]["messages"][0]["content"]
+    assert "Screenshot analysis:" in system_prompt
+    assert "ChatGPT web interface" in system_prompt
+    assert "Recent conversation turns:" in system_prompt
 
 
 def test_no_hardcoded_google_cats_flow_exists():

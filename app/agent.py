@@ -120,14 +120,20 @@ class LocalPilotAgent:
                     f"Status: {current_task.get('status', '')}",
                 ]
             )
+            if current_task.get("status") in {"completed", "final"}:
+                lines.append("The last active task finished recently. If the user is clarifying or continuing it, keep this context.")
             last_tool_call = current_task.get("last_tool_call") or {}
             if isinstance(last_tool_call, dict) and last_tool_call.get("tool"):
                 lines.append(f"Last tool call: {last_tool_call.get('tool')} {json.dumps(last_tool_call.get('args', {}), ensure_ascii=True)}")
+            if current_task.get("last_tool_result_summary"):
+                lines.append(f"Last tool result: {current_task.get('last_tool_result_summary')}")
             for recent_tool_call in (current_task.get("recent_tool_calls") or [])[-3:]:
                 if isinstance(recent_tool_call, dict) and recent_tool_call.get("tool"):
                     lines.append(
                         f"Recent tool call: {recent_tool_call.get('tool')} {json.dumps(recent_tool_call.get('args', {}), ensure_ascii=True)}"
                     )
+            for recent_result_summary in (current_task.get("recent_tool_result_summaries") or [])[-3:]:
+                lines.append(f"Recent tool result: {recent_result_summary}")
             last_approval = current_task.get("last_approval_request") or {}
             if isinstance(last_approval, dict) and last_approval.get("summary"):
                 lines.append(f"Last approval request: {last_approval.get('summary')}")
@@ -135,6 +141,16 @@ class LocalPilotAgent:
                 lines.append(f"Last final answer: {current_task.get('last_final_answer')}")
             for summary in (current_task.get("recent_step_summaries") or [])[-4:]:
                 lines.append(f"Recent step: {summary}")
+            recent_messages = current_task.get("recent_messages") or []
+            if recent_messages:
+                lines.append("Recent conversation turns:")
+                for message in recent_messages[-4:]:
+                    if not isinstance(message, dict):
+                        continue
+                    role = str(message.get("role", "message"))
+                    content = str(message.get("content", "")).strip()
+                    if content:
+                        lines.append(f"- {role}: {content}")
         if self.memory_store is not None:
             recent_sessions = self.memory_store.summarize_recent_sessions(limit=2)
             if recent_sessions and recent_sessions != "No recent sessions.":
@@ -192,6 +208,70 @@ class LocalPilotAgent:
             return "waiting_for_approval"
         return "active"
 
+    def _append_recent_message(
+        self,
+        recent_messages: list[dict[str, str]],
+        *,
+        role: str,
+        content: str,
+    ) -> None:
+        cleaned = content.strip()
+        if not cleaned:
+            return
+        candidate = {"role": role, "content": cleaned}
+        if recent_messages and recent_messages[-1] == candidate:
+            return
+        recent_messages.append(candidate)
+
+    def _summarize_tool_result_for_memory(
+        self,
+        tool_payload: dict[str, Any],
+        tool_result: dict[str, Any],
+    ) -> str:
+        tool_name = str(tool_payload.get("tool", "tool"))
+        if not tool_result.get("ok"):
+            return f"{tool_name} failed: {tool_result.get('error', 'unknown error')}"
+        result_payload = tool_result.get("result") or {}
+        if not isinstance(result_payload, dict):
+            return f"{tool_name} succeeded."
+        if tool_name == "analyze_screenshot":
+            description = str(result_payload.get("description", "")).strip()
+            return f"Screenshot analysis: {description}" if description else "Screenshot analysis completed."
+        if tool_name == "desktop_suggest_action":
+            action = str(result_payload.get("action", "unknown"))
+            target = str(result_payload.get("target", "unknown"))
+            confidence = result_payload.get("confidence")
+            risk = str(result_payload.get("risk", "unknown"))
+            confidence_text = ""
+            if isinstance(confidence, (int, float)):
+                confidence_text = f" at {confidence:.0%} confidence"
+            return f"Suggested desktop action: {action} {target}{confidence_text}, risk={risk}."
+        if tool_name == "take_screenshot":
+            path = str(result_payload.get("path", "")).strip()
+            return f"Screenshot saved: {path}" if path else "Screenshot captured."
+        if tool_name.startswith("browser_"):
+            title = str(result_payload.get("title", "")).strip()
+            url = str(result_payload.get("url", "")).strip()
+            text_preview = str(result_payload.get("text_preview", "")).strip()
+            parts = [part for part in [title, url, text_preview] if part]
+            return f"{tool_name} -> {' | '.join(parts)}" if parts else f"{tool_name} succeeded."
+        if tool_name == "set_timer":
+            label = str(result_payload.get("label", "Timer")).strip()
+            fires_at = str(result_payload.get("fires_at", "")).strip()
+            return f"Timer set: {label} for {fires_at}."
+        if tool_name == "write_file":
+            path = str(result_payload.get("path", "")).strip()
+            checkpoint_id = str(result_payload.get("checkpoint_id", "")).strip()
+            if path and checkpoint_id:
+                return f"File written: {path} with checkpoint {checkpoint_id}."
+            if path:
+                return f"File written: {path}."
+        if result_payload.get("message"):
+            return str(result_payload["message"])
+        if result_payload.get("path"):
+            return f"{tool_name} path: {result_payload['path']}"
+        return f"{tool_name} succeeded."
+
     def _update_current_task_after_step(
         self,
         task_id: str,
@@ -208,6 +288,10 @@ class LocalPilotAgent:
         current_task = self.memory_store.load_current_task() or {}
         recent_step_summaries = list(current_task.get("recent_step_summaries") or [])
         recent_tool_calls = list(current_task.get("recent_tool_calls") or [])
+        recent_tool_result_summaries = list(current_task.get("recent_tool_result_summaries") or [])
+        recent_messages = list(current_task.get("recent_messages") or [])
+        self._append_recent_message(recent_messages, role="user", content=latest_user_message)
+        last_tool_result_summary = current_task.get("last_tool_result_summary")
         if tool_payload is not None:
             summary = f"{tool_payload.get('tool', 'tool')} requested"
             if tool_result is not None:
@@ -215,8 +299,14 @@ class LocalPilotAgent:
                 summary = f"{tool_payload.get('tool', 'tool')} -> {outcome}"
                 if tool_result.get("approval"):
                     summary += f" | approval: {tool_result['approval'].get('summary', '')}"
+                last_tool_result_summary = self._summarize_tool_result_for_memory(tool_payload, tool_result)
+                recent_tool_result_summaries.append(last_tool_result_summary)
             recent_step_summaries.append(summary)
             recent_tool_calls.append({"tool": tool_payload.get("tool"), "args": tool_payload.get("args", {})})
+        if final_answer is not None:
+            self._append_recent_message(recent_messages, role="assistant", content=final_answer)
+        if question is not None:
+            self._append_recent_message(recent_messages, role="assistant", content=question)
         updates: dict[str, Any] = {
             "active_task_id": task_id,
             "original_user_task": original_user_task,
@@ -228,6 +318,9 @@ class LocalPilotAgent:
             "last_final_answer": final_answer if final_answer is not None else current_task.get("last_final_answer"),
             "recent_step_summaries": recent_step_summaries[-6:],
             "recent_tool_calls": recent_tool_calls[-5:],
+            "last_tool_result_summary": last_tool_result_summary,
+            "recent_tool_result_summaries": recent_tool_result_summaries[-5:],
+            "recent_messages": recent_messages[-8:],
         }
         if question is not None:
             updates["last_question"] = question

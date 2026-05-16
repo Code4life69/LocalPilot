@@ -174,6 +174,15 @@ class MemoryStore:
         recent_steps = payload.get("recent_step_summaries") or []
         if isinstance(recent_steps, list):
             payload["recent_step_summaries"] = recent_steps[-6:]
+        recent_tool_calls = payload.get("recent_tool_calls") or []
+        if isinstance(recent_tool_calls, list):
+            payload["recent_tool_calls"] = recent_tool_calls[-5:]
+        recent_tool_results = payload.get("recent_tool_result_summaries") or []
+        if isinstance(recent_tool_results, list):
+            payload["recent_tool_result_summaries"] = recent_tool_results[-5:]
+        recent_messages = payload.get("recent_messages") or []
+        if isinstance(recent_messages, list):
+            payload["recent_messages"] = recent_messages[-8:]
         return self.save_current_task(payload)
 
     def clear_current_task(self) -> str:
