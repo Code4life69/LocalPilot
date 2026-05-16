@@ -77,6 +77,7 @@ def test_tool_registry_registers_expected_builtin_tools(tmp_path):
         "desktop_get_mouse_position",
         "desktop_suggest_action",
         "desktop_move_mouse_preview",
+        "desktop_execute_suggestion",
         "browser_launch",
         "browser_close",
         "browser_goto",
@@ -458,8 +459,11 @@ def test_desktop_suggest_action_returns_structured_schema(tmp_path):
 
     assert result["ok"] is True
     assert result["result"]["action"] == "click"
+    assert result["result"]["suggestion_id"].startswith("desk_suggest_")
     assert result["result"]["requires_approval_to_execute"] is True
     assert result["result"]["executed"] is False
+    assert registry.desktop_suggestion_store.path.exists()
+    assert result["result"]["suggestion_id"] in registry.desktop_suggestion_store.path.read_text(encoding="utf-8")
 
 
 def test_desktop_suggest_action_json_parse_failure_returns_structured_error(tmp_path):
@@ -496,6 +500,142 @@ def test_desktop_move_mouse_preview_requires_approval(tmp_path):
     assert result["error"] == "User denied approval."
     assert prompts[0]["risk"] == "medium"
     assert "No click will be performed" in prompts[0]["summary"]
+
+
+def test_desktop_execute_suggestion_requires_approval(tmp_path):
+    prompts = []
+    registry, _root_dir, workspace, vision, _browser = build_registry(tmp_path, approval_callback=lambda prompt: prompts.append(prompt) or False)
+    image_path = workspace / "screen.png"
+    image_path.write_bytes(b"png")
+    vision.response_text = json.dumps(
+        {
+            "action": "click",
+            "target": "Google search bar",
+            "x": 735,
+            "y": 410,
+            "confidence": 0.86,
+            "risk": "medium",
+            "reason": "The user wants to search, and this appears to be the main search field.",
+        }
+    )
+    suggested = registry.execute_tool_call(
+        {
+            "tool": "desktop_suggest_action",
+            "args": {"path": str(image_path), "instruction": "Tell me what you would click next. Do not click anything."},
+            "reason": "Suggest the next desktop action.",
+        }
+    )
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_execute_suggestion",
+            "args": {"suggestion_id": suggested["result"]["suggestion_id"]},
+            "reason": "The user approved the suggested click.",
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "User denied approval."
+    assert prompts[0]["risk"] == "dangerous"
+    assert "Execute one approved desktop click" in prompts[0]["summary"]
+
+
+def test_desktop_execute_suggestion_rejects_missing_suggestion_id(tmp_path):
+    registry, _root_dir, _workspace, _vision, _browser = build_registry(tmp_path)
+
+    result = registry.execute_tool_call(
+        {"tool": "desktop_execute_suggestion", "args": {}, "reason": "Click the suggested target."}
+    )
+
+    assert result["ok"] is False
+    assert "suggestion_id is required" in result["error"]
+
+
+def test_desktop_execute_suggestion_cannot_run_expired_suggestion(tmp_path):
+    registry, _root_dir, workspace, vision, _browser = build_registry(tmp_path)
+    image_path = workspace / "screen.png"
+    image_path.write_bytes(b"png")
+    vision.response_text = json.dumps(
+        {
+            "action": "click",
+            "target": "Google search bar",
+            "x": 735,
+            "y": 410,
+            "confidence": 0.86,
+            "risk": "medium",
+            "reason": "The user wants to search, and this appears to be the main search field.",
+        }
+    )
+    suggested = registry.execute_tool_call(
+        {
+            "tool": "desktop_suggest_action",
+            "args": {"path": str(image_path), "instruction": "Tell me what you would click next. Do not click anything."},
+            "reason": "Suggest the next desktop action.",
+        }
+    )
+    suggestions = registry.desktop_suggestion_store._load()
+    suggestions[0]["expires_at"] = "2000-01-01T00:00:00"
+    registry.desktop_suggestion_store._save(suggestions)
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_execute_suggestion",
+            "args": {"suggestion_id": suggested["result"]["suggestion_id"]},
+            "reason": "The user approved the suggested click.",
+        }
+    )
+
+    assert result["ok"] is False
+    assert "expired" in result["error"].lower()
+
+
+def test_desktop_execute_suggestion_returns_structured_result_on_success(tmp_path, monkeypatch):
+    registry, _root_dir, workspace, vision, _browser = build_registry(tmp_path)
+    image_path = workspace / "screen.png"
+    image_path.write_bytes(b"png")
+    vision.response_text = json.dumps(
+        {
+            "action": "click",
+            "target": "Google search bar",
+            "x": 735,
+            "y": 410,
+            "confidence": 0.86,
+            "risk": "medium",
+            "reason": "The user wants to search, and this appears to be the main search field.",
+        }
+    )
+    monkeypatch.setattr(
+        "app.tool_registry.execute_suggestion_click",
+        lambda suggestion_id, suggestion_store: {
+            "ok": True,
+            "suggestion_id": suggestion_id,
+            "action": "click",
+            "target": "Google search bar",
+            "x": 735,
+            "y": 410,
+            "executed": True,
+        },
+    )
+    suggested = registry.execute_tool_call(
+        {
+            "tool": "desktop_suggest_action",
+            "args": {"path": str(image_path), "instruction": "Tell me what you would click next. Do not click anything."},
+            "reason": "Suggest the next desktop action.",
+        }
+    )
+
+    result = registry.execute_tool_call(
+        {
+            "tool": "desktop_execute_suggestion",
+            "args": {"suggestion_id": suggested["result"]["suggestion_id"]},
+            "reason": "The user approved the suggested click.",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["result"]["executed"] is True
+    assert result["result"]["x"] == 735
+    assert result["result"]["y"] == 410
 
 
 def test_desktop_move_mouse_preview_low_confidence_is_blocked(tmp_path):

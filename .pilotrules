@@ -15,5 +15,8 @@
 - Use set_timer, list_timers, and cancel_timer for real PC timers or reminders.
 - Never fake a timer by using sleep, timeout, or other blocking shell commands.
 - Use desktop_suggest_action only for visible Windows desktop or non-browser UI tasks.
-- For desktop tasks in this milestone, observe first, suggest second, and do not execute desktop click, typing, key press, or hotkey actions.
+- For desktop tasks, observe first and suggest second. Never execute a desktop click from raw coordinates.
+- For desktop click goals, use desktop_suggest_action to create the saved suggestion_id before asking for approval or using desktop_execute_suggestion.
+- Only use desktop_execute_suggestion for one saved suggestion_id after the user clearly approves that exact click.
+- Never execute low-confidence or sensitive desktop suggestions. Do not execute desktop typing, key press, or hotkey actions yet.
 - desktop_move_mouse_preview is preview-only, requires approval, and must never click.

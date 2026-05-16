@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+import hashlib
 import json
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +15,7 @@ from app.safety import RISK_DANGEROUS, RISK_MEDIUM
 
 LOW_CONFIDENCE_THRESHOLD = 0.60
 WARNING_CONFIDENCE_THRESHOLD = 0.80
+DEFAULT_SUGGESTION_TTL_SECONDS = 300
 SENSITIVE_DESKTOP_PATTERNS = (
     r"\bpassword\b",
     r"\blog in\b",
@@ -29,6 +34,92 @@ SENSITIVE_DESKTOP_PATTERNS = (
     r"\badmin\b",
     r"\buac\b",
 )
+
+
+class DesktopSuggestionStore:
+    def __init__(self, path: str | Path, ttl_seconds: int = DEFAULT_SUGGESTION_TTL_SECONDS) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.ttl_seconds = max(int(ttl_seconds or DEFAULT_SUGGESTION_TTL_SECONDS), 30)
+        if not self.path.exists():
+            self._save([])
+
+    def create_suggestion(
+        self,
+        *,
+        task_id: str | None,
+        suggestion: dict[str, Any],
+        screenshot_path: str | Path,
+    ) -> dict[str, Any]:
+        now = datetime.now()
+        record = {
+            "suggestion_id": f"desk_suggest_{uuid.uuid4().hex[:12]}",
+            "timestamp": now.isoformat(timespec="seconds"),
+            "task_id": str(task_id or "").strip(),
+            "action": str(suggestion["action"]),
+            "target": str(suggestion["target"]),
+            "x": int(suggestion["x"]),
+            "y": int(suggestion["y"]),
+            "confidence": float(suggestion["confidence"]),
+            "risk": str(suggestion.get("risk", RISK_MEDIUM)),
+            "reason": str(suggestion.get("reason", "")),
+            "screenshot_path": str(Path(screenshot_path).resolve()),
+            "screenshot_hash": _sha256_file(Path(screenshot_path)),
+            "expires_at": (now + timedelta(seconds=self.ttl_seconds)).isoformat(timespec="seconds"),
+            "executed": False,
+        }
+        suggestions = self._load()
+        suggestions.append(record)
+        self._save(suggestions)
+        return record
+
+    def get_suggestion(self, suggestion_id: str) -> dict[str, Any] | None:
+        for record in reversed(self._load()):
+            if str(record.get("suggestion_id", "")).strip() == suggestion_id.strip():
+                return record
+        return None
+
+    def mark_executed(self, suggestion_id: str) -> dict[str, Any] | None:
+        suggestions = self._load()
+        for record in suggestions:
+            if str(record.get("suggestion_id", "")).strip() != suggestion_id.strip():
+                continue
+            record["executed"] = True
+            record["executed_at"] = datetime.now().isoformat(timespec="seconds")
+            self._save(suggestions)
+            return record
+        return None
+
+    def is_expired(self, record: dict[str, Any]) -> bool:
+        expires_at = str(record.get("expires_at", "")).strip()
+        if not expires_at:
+            return True
+        try:
+            deadline = datetime.fromisoformat(expires_at)
+        except ValueError:
+            return True
+        return datetime.now() > deadline
+
+    def list_suggestions(self, limit: int = 25) -> list[dict[str, Any]]:
+        suggestions = list(reversed(self._load()))
+        return suggestions[: max(int(limit or 25), 1)]
+
+    def _load(self) -> list[dict[str, Any]]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, FileNotFoundError):
+            return []
+        if isinstance(payload, dict):
+            suggestions = payload.get("suggestions")
+            if isinstance(suggestions, list):
+                return [item for item in suggestions if isinstance(item, dict)]
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)]
+        return []
+
+    def _save(self, suggestions: list[dict[str, Any]]) -> None:
+        payload = {"suggestions": suggestions}
+        self.path.write_text(json.dumps(payload, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
 
 
 def _import_pyautogui():
@@ -106,6 +197,8 @@ def suggest_action_from_screenshot(
         "Return strict JSON only. Do not wrap it in markdown.\n"
         "You may suggest a next desktop action, but do not assume it will be executed.\n"
         "The JSON must include: action, target, x, y, confidence, risk, reason.\n"
+        "Follow the user's goal closely. If the user names a visible button, field, or control, prefer that exact visible target.\n"
+        "Use the exact visible control text in the target field when possible.\n"
         "Use confidence from 0.00 to 1.00.\n"
         "If the visible target appears sensitive, set risk to dangerous.\n"
         "Sensitive examples include: password fields, login submission, payment or checkout, email send buttons, delete confirmations, system settings, or admin prompts.\n"
@@ -177,6 +270,61 @@ def suggest_action_from_screenshot(
     }
 
 
+def execute_suggestion_click(
+    suggestion_id: str,
+    suggestion_store: DesktopSuggestionStore,
+    *,
+    pyautogui_module: Any | None = None,
+    pre_click_delay_seconds: float = 0.15,
+) -> dict[str, Any]:
+    suggestion = suggestion_store.get_suggestion(suggestion_id)
+    if suggestion is None:
+        return {"ok": False, "error": f"Desktop suggestion not found: {suggestion_id}"}
+    if suggestion_store.is_expired(suggestion):
+        return {"ok": False, "error": f"Desktop suggestion expired: {suggestion_id}"}
+    if bool(suggestion.get("executed")):
+        return {"ok": False, "error": f"Desktop suggestion already executed: {suggestion_id}"}
+    if str(suggestion.get("action", "")).strip().lower() != "click":
+        return {"ok": False, "error": "Only click suggestions can be executed in this milestone."}
+    confidence = float(suggestion.get("confidence", 0.0) or 0.0)
+    if confidence < WARNING_CONFIDENCE_THRESHOLD:
+        return {
+            "ok": False,
+            "error": (
+                "Desktop suggestion confidence is below 0.80, so execution is blocked in this milestone. "
+                "Observe the screen again before trying to click."
+            ),
+        }
+    sensitive_text = f"{suggestion.get('target', '')} {suggestion.get('reason', '')}"
+    if _is_sensitive_desktop_context(sensitive_text):
+        return {"ok": False, "error": "Sensitive desktop target detected. Execution is blocked in this milestone."}
+    try:
+        pyautogui = pyautogui_module or _import_pyautogui()
+    except ImportError as exc:
+        return {"ok": False, "error": f"pyautogui not installed: {exc}"}
+    width, height = pyautogui.size()
+    x = int(suggestion.get("x", -1))
+    y = int(suggestion.get("y", -1))
+    if x < 0 or y < 0 or x >= int(width) or y >= int(height):
+        return {
+            "ok": False,
+            "error": f"Desktop suggestion coordinates are outside the screen bounds: ({x}, {y}) not within {width}x{height}.",
+        }
+    time.sleep(max(float(pre_click_delay_seconds), 0.0))
+    pyautogui.click(x, y)
+    updated = suggestion_store.mark_executed(suggestion_id) or suggestion
+    return {
+        "ok": True,
+        "suggestion_id": suggestion_id,
+        "action": "click",
+        "target": str(updated.get("target", "")),
+        "x": x,
+        "y": y,
+        "confidence": confidence,
+        "executed": True,
+    }
+
+
 def _parse_suggestion_response(raw_response: str) -> dict[str, Any]:
     payload = _extract_json_object(raw_response)
     required_fields = {"action", "target", "x", "y", "confidence", "risk", "reason"}
@@ -238,3 +386,14 @@ def _normalize_risk(risk: str) -> str:
 def _is_sensitive_desktop_context(text: str) -> bool:
     lowered = text.lower()
     return any(re.search(pattern, lowered) for pattern in SENSITIVE_DESKTOP_PATTERNS)
+
+
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(8192)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()

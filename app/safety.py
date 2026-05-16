@@ -189,6 +189,14 @@ class SafetyManager:
                 return SafetyDecision(RISK_DANGEROUS, True, True, "Sensitive desktop target requires explicit approval.")
             return SafetyDecision(RISK_MEDIUM, True, True, "Mouse preview movement requires approval.")
 
+        if tool_name == "desktop_execute_suggestion":
+            return SafetyDecision(
+                RISK_DANGEROUS,
+                True,
+                True,
+                "Desktop click execution requires explicit approval and a previously saved suggestion_id.",
+            )
+
         if tool_name in {"list_files", "read_file"}:
             if path_value is None or self.is_path_within_workspace(path_value):
                 return SafetyDecision(RISK_SAFE, False, True, "Read-only workspace access.")

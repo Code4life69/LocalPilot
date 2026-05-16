@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -56,17 +57,14 @@ class LocalPilotAgent:
 
     def parse_agent_response(self, text: str) -> dict[str, Any]:
         stripped = text.strip()
-        if stripped.startswith("```"):
-            lines = stripped.splitlines()
-            if lines and lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            stripped = "\n".join(lines).strip()
+        stripped = re.sub(r"```(?:json)?", "", stripped, flags=re.IGNORECASE).strip()
         try:
             payload = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Agent response was not valid JSON: {exc}") from exc
+            payloads = self._extract_json_objects(stripped)
+            if not payloads:
+                raise ValueError(f"Agent response was not valid JSON: {exc}") from exc
+            payload = payloads[-1]
         if not isinstance(payload, dict):
             raise ValueError("Agent response JSON must be an object.")
         response_type = payload.get("type")
@@ -88,6 +86,29 @@ class LocalPilotAgent:
         if response_type not in {"tool_call", "final", "question"}:
             raise ValueError("Agent response type must be one of: tool_call, final, question.")
         return payload
+
+    def _extract_json_objects(self, text: str) -> list[dict[str, Any]]:
+        decoder = json.JSONDecoder()
+        payloads: list[dict[str, Any]] = []
+        index = 0
+        length = len(text)
+        while index < length:
+            while index < length and text[index].isspace():
+                index += 1
+            if index >= length:
+                break
+            try:
+                payload, end_index = decoder.raw_decode(text, index)
+            except json.JSONDecodeError:
+                next_object = text.find("{", index + 1)
+                if next_object == -1:
+                    break
+                index = next_object
+                continue
+            if isinstance(payload, dict):
+                payloads.append(payload)
+            index = end_index
+        return payloads
 
     def planner_context_warning(self) -> str | None:
         return self.prompt_builder.planner_context_warning()
@@ -147,12 +168,21 @@ class LocalPilotAgent:
         approval_summary = last_approval.get("summary") if isinstance(last_approval, dict) else ""
         last_tool = current_task.get("last_tool_call") or {}
         last_tool_name = last_tool.get("tool") if isinstance(last_tool, dict) else None
+        desktop_suggestion_id = str(current_task.get("last_desktop_suggestion_id") or "").strip()
+        desktop_suggestion_hint = (
+            f"Saved desktop suggestion_id: {desktop_suggestion_id}\n"
+            "If the user is approving a previously suggested desktop click, use desktop_execute_suggestion with that saved suggestion_id.\n"
+            "If the saved suggestion is still valid and safe, your next reply should be a desktop_execute_suggestion tool call instead of a final answer.\n"
+            if desktop_suggestion_id and not current_task.get("last_desktop_suggestion_executed")
+            else ""
+        )
         if followup_kind == "approve":
             return (
                 "The user approved the pending request or continuation for the active task.\n"
                 f"Original task: {original_task}\n"
                 f"Pending approval: {approval_summary or 'No explicit approval summary recorded.'}\n"
                 f"Last tool call: {last_tool_name or 'none'}\n"
+                f"{desktop_suggestion_hint}"
                 "Continue the task and avoid restarting from scratch.",
                 active_task_id,
             )
@@ -161,6 +191,7 @@ class LocalPilotAgent:
                 "The user denied the pending request for the active task.\n"
                 f"Original task: {original_task}\n"
                 f"Pending approval: {approval_summary or 'No explicit approval summary recorded.'}\n"
+                f"{desktop_suggestion_hint}"
                 "Do not execute the denied action. Explain the outcome and propose a safer next step.",
                 active_task_id,
             )
@@ -251,10 +282,20 @@ class LocalPilotAgent:
             target = str(result_payload.get("target", "unknown"))
             confidence = result_payload.get("confidence")
             risk = str(result_payload.get("risk", "unknown"))
+            suggestion_id = str(result_payload.get("suggestion_id", "")).strip()
             confidence_text = ""
             if isinstance(confidence, (int, float)):
                 confidence_text = f" at {confidence:.0%} confidence"
-            return self._truncate_text(f"Suggested desktop action: {action} {target}{confidence_text}, risk={risk}.", 400)
+            suggestion_text = f" | suggestion_id={suggestion_id}" if suggestion_id else ""
+            return self._truncate_text(f"Suggested desktop action: {action} {target}{confidence_text}, risk={risk}{suggestion_text}.", 400)
+        if tool_name == "desktop_execute_suggestion":
+            action = str(result_payload.get("action", "click"))
+            target = str(result_payload.get("target", "unknown"))
+            suggestion_id = str(result_payload.get("suggestion_id", "")).strip()
+            executed = bool(result_payload.get("executed"))
+            status = "executed" if executed else "not executed"
+            suggestion_text = f" | suggestion_id={suggestion_id}" if suggestion_id else ""
+            return self._truncate_text(f"Desktop {action} {status}: {target}{suggestion_text}.", 400)
         if tool_name == "take_screenshot":
             path = str(result_payload.get("path", "")).strip()
             return self._truncate_text(f"Screenshot saved: {path}" if path else "Screenshot captured.", 400)
@@ -321,6 +362,30 @@ class LocalPilotAgent:
             self._append_recent_message(recent_messages, role="assistant", content=final_answer)
         if question is not None:
             self._append_recent_message(recent_messages, role="assistant", content=question)
+        suggestion_updates: dict[str, Any] = {}
+        if tool_payload is not None and tool_result is not None:
+            result_payload = tool_result.get("result") or {}
+            if not isinstance(result_payload, dict):
+                result_payload = {}
+            if tool_payload.get("tool") == "desktop_suggest_action" and tool_result.get("ok"):
+                suggestion_updates = {
+                    "last_desktop_suggestion_id": str(result_payload.get("suggestion_id", "")).strip(),
+                    "last_desktop_suggestion_action": str(result_payload.get("action", "")).strip(),
+                    "last_desktop_suggestion_target": str(result_payload.get("target", "")).strip(),
+                    "last_desktop_suggestion_x": result_payload.get("x"),
+                    "last_desktop_suggestion_y": result_payload.get("y"),
+                    "last_desktop_suggestion_confidence": result_payload.get("confidence"),
+                    "last_desktop_suggestion_expires_at": str(result_payload.get("expires_at", "")).strip(),
+                    "last_desktop_suggestion_executed": False,
+                    "last_desktop_suggestion_warning": str(result_payload.get("warning", "")).strip(),
+                }
+            elif tool_payload.get("tool") == "desktop_execute_suggestion":
+                suggestion_id = str(result_payload.get("suggestion_id", "")).strip() or str(tool_payload.get("args", {}).get("suggestion_id", "")).strip()
+                if suggestion_id:
+                    suggestion_updates = {
+                        "last_desktop_suggestion_id": suggestion_id,
+                        "last_desktop_suggestion_executed": bool(tool_result.get("ok") and result_payload.get("executed")),
+                    }
         updates: dict[str, Any] = {
             "active_task_id": task_id,
             "original_user_task": self._truncate_text(original_user_task, 800),
@@ -345,6 +410,7 @@ class LocalPilotAgent:
             "last_error": self._truncate_text(last_error, 600) if last_error is not None else current_task.get("last_error", ""),
             "retry_suggestion": self._truncate_text(retry_suggestion, 200) if retry_suggestion is not None else current_task.get("retry_suggestion", ""),
         }
+        updates.update({key: value for key, value in suggestion_updates.items() if value is not None})
         if question is not None:
             updates["last_question"] = self._truncate_text(question, 300)
         self.memory_store.update_current_task(**updates)

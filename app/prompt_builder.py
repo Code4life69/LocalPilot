@@ -16,7 +16,7 @@ COMPACT_RULE_FALLBACK = [
     "Use Puppeteer browser tools for websites.",
     "Use Qwen3-VL for screenshots and visual analysis.",
     "Require approval for risky actions.",
-    "Do not execute desktop click, type, or hotkey actions yet.",
+    "Use desktop_suggest_action before any desktop click. Only use desktop_execute_suggestion for one saved suggestion after explicit approval. Do not type or use hotkeys yet.",
 ]
 
 TOOL_GROUPS: dict[str, list[str]] = {
@@ -147,6 +147,12 @@ class PromptBuilder:
             "Available tools:\n"
             f"{tools_block}"
         )
+        if task_category == "desktop":
+            system_prompt += (
+                "\nDesktop click rule:\n"
+                "- For any desktop click goal, create a saved suggestion with desktop_suggest_action before asking for approval or using desktop_execute_suggestion.\n"
+                "- Do not rely on raw coordinates from analyze_screenshot as the execution source."
+            )
         if working_memory:
             system_prompt += f"\nWorking memory:\n{working_memory}"
         warning = self.planner_context_warning()
@@ -194,6 +200,11 @@ class PromptBuilder:
         for tool_name in current_tool_names[-2:]:
             if tool_name and tool_name not in selected:
                 selected.append(tool_name)
+        if task_category == "desktop":
+            suggestion_id = str((current_task or {}).get("last_desktop_suggestion_id", "")).strip()
+            suggestion_executed = bool((current_task or {}).get("last_desktop_suggestion_executed"))
+            if suggestion_id and not suggestion_executed and "desktop_execute_suggestion" not in selected:
+                selected.append("desktop_execute_suggestion")
         return selected
 
     def filter_tools(self, available_tools: list[dict[str, Any]], tool_names: list[str]) -> list[dict[str, Any]]:
@@ -221,6 +232,9 @@ class PromptBuilder:
         pending_approval = self._summarize_pending_approval(current_task)
         if pending_approval:
             lines.append(f"Pending approval: {pending_approval}")
+        desktop_suggestion = self._summarize_desktop_suggestion(current_task)
+        if desktop_suggestion:
+            lines.append(f"Desktop suggestion: {desktop_suggestion}")
         last_tool_result = self._truncate(str(current_task.get("last_tool_result_summary", "")).strip(), 800)
         if last_tool_result:
             lines.append(f"Last tool result: {last_tool_result}")
@@ -279,6 +293,34 @@ class PromptBuilder:
         combined = summary if not risk else f"{summary} | risk={risk}"
         return self._truncate(combined, 300)
 
+    def _summarize_desktop_suggestion(self, current_task: dict[str, Any]) -> str:
+        suggestion_id = str(current_task.get("last_desktop_suggestion_id", "")).strip()
+        if not suggestion_id:
+            return ""
+        target = self._truncate(str(current_task.get("last_desktop_suggestion_target", "")).strip(), 120)
+        action = self._truncate(str(current_task.get("last_desktop_suggestion_action", "")).strip(), 40)
+        expires_at = self._truncate(str(current_task.get("last_desktop_suggestion_expires_at", "")).strip(), 40)
+        executed = "yes" if current_task.get("last_desktop_suggestion_executed") else "no"
+        confidence_value = current_task.get("last_desktop_suggestion_confidence")
+        confidence = ""
+        if isinstance(confidence_value, (int, float)):
+            confidence = f" | confidence={float(confidence_value):.0%}"
+        x = current_task.get("last_desktop_suggestion_x")
+        y = current_task.get("last_desktop_suggestion_y")
+        coordinates = ""
+        if isinstance(x, int) and isinstance(y, int):
+            coordinates = f" | coordinates=({x}, {y})"
+        parts = [
+            f"id={suggestion_id}",
+            f"action={action or 'unknown'}",
+            f"target={target or 'unknown'}",
+            coordinates.lstrip(" |"),
+            f"executed={executed}",
+            f"expires={expires_at}" if expires_at else "",
+        ]
+        summary = " | ".join(part for part in parts if part)
+        return self._truncate(summary + confidence, 320)
+
     def _compact_rules(self, rules_text: str) -> str:
         selected: list[str] = []
         for raw_line in rules_text.splitlines():
@@ -305,6 +347,8 @@ class PromptBuilder:
                     "typing",
                     "key press",
                     "hotkey",
+                    "desktop_execute_suggestion",
+                    "desktop_suggest_action",
                 )
             ):
                 selected.append(normalized)

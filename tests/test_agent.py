@@ -37,6 +37,16 @@ class FakeRegistry:
                 "risk_level": "safe",
                 "approval_required": False,
             },
+            {
+                "name": "desktop_execute_suggestion",
+                "description": "Execute one previously suggested desktop click after explicit approval.",
+                "argument_schema": {
+                    "type": "object",
+                    "properties": {"suggestion_id": {"type": "string"}},
+                },
+                "risk_level": "dangerous",
+                "approval_required": True,
+            },
         ]
 
     def execute_tool_call(self, tool_call):
@@ -103,6 +113,22 @@ def test_agent_parses_tool_name_in_type_field():
 
     assert parsed["type"] == "tool_call"
     assert parsed["tool"] == "take_screenshot"
+
+
+def test_agent_parses_last_json_object_when_model_returns_multiple_objects():
+    agent = LocalPilotAgent(llm_client=FakeLLM([]), tool_registry=FakeRegistry())
+
+    parsed = agent.parse_agent_response(
+        """```json
+{"type":"final","message":"approved"}
+```
+```json
+{"type":"tool_call","tool":"desktop_execute_suggestion","args":{"suggestion_id":"desk_suggest_demo"},"reason":"Execute the saved click."}
+```"""
+    )
+
+    assert parsed["type"] == "tool_call"
+    assert parsed["tool"] == "desktop_execute_suggestion"
 
 
 def test_agent_rejects_invalid_json():
@@ -185,6 +211,29 @@ def test_agent_executes_mocked_desktop_suggest_action_tool_call():
     assert registry.calls[0]["tool"] == "desktop_suggest_action"
 
 
+def test_agent_can_execute_mocked_desktop_suggestion_by_id():
+    llm = FakeLLM(
+        [
+            json.dumps(
+                {
+                    "type": "tool_call",
+                    "tool": "desktop_execute_suggestion",
+                    "args": {"suggestion_id": "desk_suggest_demo"},
+                    "reason": "The user approved the suggested click.",
+                }
+            ),
+            json.dumps({"type": "final", "message": "The approved click was executed."}),
+        ]
+    )
+    registry = FakeRegistry()
+    agent = LocalPilotAgent(llm_client=llm, tool_registry=registry)
+
+    result = agent.run_task("approve the suggested click")
+
+    assert result["ok"] is True
+    assert registry.calls[0]["tool"] == "desktop_execute_suggestion"
+
+
 def test_agent_loads_pilot_rules_into_prompt(tmp_path):
     (tmp_path / ".pilotrules").write_text("The AI must choose tools.", encoding="utf-8")
     agent = LocalPilotAgent(llm_client=FakeLLM([]), tool_registry=FakeRegistry(), root_dir=tmp_path)
@@ -259,6 +308,37 @@ def test_agent_followup_yes_uses_active_task_context(tmp_path):
     first_user_message = llm.calls[0]["messages"][1]["content"]
     assert "approved the pending request" in first_user_message.lower()
     assert "make a basic website locally" in first_user_message
+
+
+def test_agent_followup_approve_phrase_uses_active_task_context(tmp_path):
+    memory_dir = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "capabilities.json").write_text("{}", encoding="utf-8")
+    memory = MemoryStore(memory_dir, config_dir / "capabilities.json")
+    memory.save_current_task(
+        {
+            "active_task_id": "task123",
+            "original_user_task": "Look at my screen and tell me what you would click next.",
+            "latest_user_message": "waiting on approval",
+            "mode": "agent",
+            "status": "active",
+            "last_desktop_suggestion_id": "desk_suggest_demo",
+            "last_desktop_suggestion_target": "Google search bar",
+            "last_desktop_suggestion_executed": False,
+        }
+    )
+    llm = FakeLLM([json.dumps({"type": "final", "message": "Continuing the task."})])
+    agent = LocalPilotAgent(llm_client=llm, tool_registry=FakeRegistry(), memory_store=memory, root_dir=tmp_path)
+
+    result = agent.run_task("approve the suggested click")
+
+    assert result["ok"] is True
+    first_user_message = llm.calls[0]["messages"][1]["content"]
+    system_prompt = llm.calls[0]["messages"][0]["content"]
+    assert "approved the pending request" in first_user_message.lower()
+    assert "desktop_execute_suggestion tool call" in first_user_message
+    assert "desk_suggest_demo" in system_prompt
 
 
 def test_agent_followup_continue_uses_active_task_context(tmp_path):
@@ -388,8 +468,9 @@ def test_agent_retries_once_with_ultra_compact_prompt_after_context_overflow(tmp
     assert result["ok"] is True
     assert result["message"] == "Still on the cats search results."
     assert len(llm.calls) == 2
-    assert "browser_search" in llm.calls[1]["messages"][0]["content"]
-    assert "desktop_suggest_action" not in llm.calls[1]["messages"][0]["content"]
+    system_prompt = llm.calls[1]["messages"][0]["content"]
+    assert "browser_search" in system_prompt
+    assert "- desktop_suggest_action(" not in system_prompt
 
 
 def test_agent_failed_followup_keeps_current_task_retryable_after_context_overflow(tmp_path):

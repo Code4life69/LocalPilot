@@ -206,9 +206,9 @@ class MemoryStore:
 
     def followup_kind(self, text: str) -> str | None:
         lowered = text.strip().lower()
-        if lowered in FOLLOWUP_APPROVE:
+        if lowered in FOLLOWUP_APPROVE or lowered.startswith(("approve", "approved", "go ahead", "do it", "yes")):
             return "approve"
-        if lowered in FOLLOWUP_DENY:
+        if lowered in FOLLOWUP_DENY or lowered.startswith(("deny", "cancel", "stop", "no")):
             return "deny"
         if lowered in FOLLOWUP_CONTINUE or lowered.startswith("i meant "):
             return "continue"

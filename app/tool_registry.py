@@ -11,6 +11,8 @@ from typing import Any, Callable
 from app.checkpoints import CheckpointManager
 from app.browser_tool import BrowserToolBridge
 from app.desktop_tool import (
+    DesktopSuggestionStore,
+    execute_suggestion_click,
     get_mouse_position as desktop_get_mouse_position,
     get_screen_size as desktop_get_screen_size,
     move_mouse_preview,
@@ -72,6 +74,7 @@ class ToolRegistry:
         self.checkpoint_manager = checkpoint_manager or CheckpointManager(self.root_dir / "memory" / "checkpoints")
         self.memory_store = memory_store or MemoryStore(self.root_dir / "memory", self.root_dir / "config" / "capabilities.json")
         self.timer_manager = timer_manager or TimerManager(self.root_dir / "memory" / "timers.json")
+        self.desktop_suggestion_store = DesktopSuggestionStore(self.root_dir / "memory" / "runtime" / "desktop_suggestions.json")
         self._approved_plans: dict[str, dict[str, Any]] = {}
         self._tools: dict[str, ToolDefinition] = {}
         self._register_builtin_tools()
@@ -358,6 +361,20 @@ class ToolRegistry:
         )
         self.register(
             ToolDefinition(
+                name="desktop_execute_suggestion",
+                description="Execute one previously suggested desktop click by suggestion_id after explicit approval.",
+                argument_schema={
+                    "type": "object",
+                    "properties": {"suggestion_id": {"type": "string"}},
+                    "required": ["suggestion_id"],
+                },
+                risk_level="dangerous",
+                approval_required=True,
+                handler=self._handle_desktop_execute_suggestion,
+            )
+        )
+        self.register(
+            ToolDefinition(
                 name="browser_launch",
                 description="Launch the Puppeteer-controlled browser in a visible window when possible.",
                 argument_schema={"type": "object", "properties": {"headless": {"type": "boolean"}}},
@@ -578,6 +595,16 @@ class ToolRegistry:
                 f"{target_suffix}."
                 " No click will be performed."
             )
+        elif tool_name == "desktop_execute_suggestion":
+            suggestion = self.desktop_suggestion_store.get_suggestion(str(args.get("suggestion_id", "")))
+            if suggestion is not None:
+                summary = (
+                    "Execute one approved desktop click"
+                    f" on {suggestion.get('target', 'unknown target')!r}"
+                    f" at ({suggestion.get('x')}, {suggestion.get('y')})."
+                )
+            else:
+                summary = f"Execute desktop suggestion `{args.get('suggestion_id', '')}`."
         request = {
             "approval_id": uuid.uuid4().hex[:12],
             "type": "approval_request",
@@ -825,12 +852,42 @@ class ToolRegistry:
     def _handle_desktop_suggest_action(self, args: dict[str, Any]) -> dict[str, Any]:
         raw_path = str(args["path"])
         path = self._resolve_user_path(raw_path) if not Path(raw_path).is_absolute() else Path(raw_path).resolve()
-        return suggest_action_from_screenshot(
+        result = suggest_action_from_screenshot(
             screenshot_path=path,
             instruction=str(args["instruction"]),
             lmstudio_client=self.lmstudio_client,
             model=self.lmstudio_client.default_vision_model,
         )
+        if not result.get("ok"):
+            return result
+        suggestion_record = self.desktop_suggestion_store.create_suggestion(
+            task_id=str(args.get("task_id") or "").strip() or None,
+            suggestion=result,
+            screenshot_path=path,
+        )
+        desktop_action = dict(result.get("desktop_action") or {})
+        desktop_action.update(
+            {
+                "suggestion_id": suggestion_record["suggestion_id"],
+                "target": suggestion_record["target"],
+                "x": suggestion_record["x"],
+                "y": suggestion_record["y"],
+                "confidence": suggestion_record["confidence"],
+                "approved": False,
+            }
+        )
+        result.update(
+            {
+                "suggestion_id": suggestion_record["suggestion_id"],
+                "timestamp": suggestion_record["timestamp"],
+                "task_id": suggestion_record["task_id"],
+                "screenshot_path": suggestion_record["screenshot_path"],
+                "screenshot_hash": suggestion_record["screenshot_hash"],
+                "expires_at": suggestion_record["expires_at"],
+                "desktop_action": desktop_action,
+            }
+        )
+        return result
 
     def _handle_desktop_move_mouse_preview(self, args: dict[str, Any]) -> dict[str, Any]:
         return move_mouse_preview(
@@ -838,6 +895,15 @@ class ToolRegistry:
             int(args["y"]),
             target=str(args.get("target", "")),
             confidence=float(args["confidence"]) if args.get("confidence") is not None else None,
+        )
+
+    def _handle_desktop_execute_suggestion(self, args: dict[str, Any]) -> dict[str, Any]:
+        suggestion_id = str(args.get("suggestion_id", "")).strip()
+        if not suggestion_id:
+            return {"ok": False, "error": "suggestion_id is required for desktop_execute_suggestion."}
+        return execute_suggestion_click(
+            suggestion_id=suggestion_id,
+            suggestion_store=self.desktop_suggestion_store,
         )
 
     def _handle_analyze_screenshot(self, args: dict[str, Any]) -> dict[str, Any]:

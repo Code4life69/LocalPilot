@@ -1516,12 +1516,14 @@ class LocalPilotGUI:
                 f"Coordinates: x={result.get('x', '?')}, y={result.get('y', '?')}",
                 f"Confidence: {confidence:.0%}",
                 f"Risk: {result.get('risk', 'unknown')}",
+                f"Suggestion ID: {result.get('suggestion_id', 'unknown')}",
                 f"Reason: {result.get('reason', '')}",
             ]
             warning = str(result.get("warning", "")).strip()
             if warning:
                 lines.append(f"Warning: {warning}")
             lines.append("No action was executed.")
+            lines.append("Say approve to execute this click, or cancel.")
             return "\n".join(lines)
         if tool_name == "desktop_move_mouse_preview" and payload.get("ok"):
             result = payload.get("result") or {}
@@ -1529,6 +1531,14 @@ class LocalPilotGUI:
             target = str(result.get("target", "")).strip()
             suffix = f" near {target}" if target else ""
             return f"Mouse moved for preview only{suffix} at {coordinates}. No click was performed."
+        if tool_name == "desktop_execute_suggestion" and payload.get("ok"):
+            result = payload.get("result") or {}
+            return (
+                "Approved desktop click executed.\n"
+                f"Target: {result.get('target', 'unknown')}\n"
+                f"Coordinates: x={result.get('x', '?')}, y={result.get('y', '?')}\n"
+                f"Suggestion ID: {result.get('suggestion_id', 'unknown')}"
+            )
         return json.dumps(payload, indent=2)
 
     def _append_safety_event_to_chat(self, message: str, extra: dict[str, Any]) -> None:

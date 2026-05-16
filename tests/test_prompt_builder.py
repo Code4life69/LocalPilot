@@ -29,6 +29,17 @@ def _sample_tools():
             "approval_required": False,
         },
         {
+            "name": "desktop_execute_suggestion",
+            "description": "Execute one previously suggested desktop click after explicit approval.",
+            "argument_schema": {
+                "type": "object",
+                "properties": {"suggestion_id": {"type": "string"}},
+                "required": ["suggestion_id"],
+            },
+            "risk_level": "dangerous",
+            "approval_required": True,
+        },
+        {
             "name": "browser_launch",
             "description": "Launch the browser.",
             "argument_schema": {"type": "object", "properties": {"headless": {"type": "boolean"}}},
@@ -193,8 +204,42 @@ def test_desktop_followup_prompt_includes_desktop_tools_only():
 
     assert "take_screenshot" in prompt
     assert "desktop_suggest_action" in prompt
+    assert "- desktop_execute_suggestion(" not in prompt
     assert "browser_launch" not in prompt
     assert "set_timer" not in prompt
+
+
+def test_desktop_followup_with_saved_suggestion_includes_execute_tool():
+    builder = PromptBuilder(planner_context_length=16384)
+    prompt = builder.build(
+        user_message="approve the suggested click",
+        current_task={
+            "active_task_id": "task123",
+            "original_user_task": "Look at my screen and tell me what you would click next.",
+            "recent_tool_calls": [{"tool": "desktop_suggest_action", "args": {"path": "demo.png"}}],
+            "last_desktop_suggestion_id": "desk_suggest_demo",
+            "last_desktop_suggestion_target": "Google search bar",
+            "last_desktop_suggestion_executed": False,
+        },
+        available_tools=_sample_tools(),
+        rules_text="- The AI must make the plan and choose tools.",
+    ).system_prompt
+
+    assert "desktop_execute_suggestion" in prompt
+    assert "desk_suggest_demo" in prompt
+
+
+def test_desktop_click_goal_prompt_requires_saved_suggestion_before_execution():
+    builder = PromptBuilder(planner_context_length=16384)
+    prompt = builder.build(
+        user_message="Look at my screen and tell me what you would click next. The goal is to click the SAFE TEST BUTTON.",
+        current_task=None,
+        available_tools=_sample_tools(),
+        rules_text="- For desktop click goals, use desktop_suggest_action to create the saved suggestion_id before asking for approval or using desktop_execute_suggestion.",
+    ).system_prompt
+
+    assert "create a saved suggestion with desktop_suggest_action" in prompt
+    assert "Do not rely on raw coordinates from analyze_screenshot" in prompt
 
 
 def test_browser_followup_prompt_includes_browser_tools_only():

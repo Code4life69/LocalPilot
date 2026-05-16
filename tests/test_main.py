@@ -476,6 +476,7 @@ def test_gui_renders_suggested_desktop_action_text():
                             "y": 410,
                             "confidence": 0.86,
                             "risk": "medium",
+                            "suggestion_id": "desk_suggest_demo",
                             "reason": "The search field looks like the next relevant target.",
                             "executed": False,
                             "warning": "",
@@ -489,6 +490,41 @@ def test_gui_renders_suggested_desktop_action_text():
     assert "Suggested desktop action:" in messages[0]["text"]
     assert "Coordinates: x=735, y=410" in messages[0]["text"]
     assert "No action was executed." in messages[0]["text"]
+    assert "Say approve to execute this click, or cancel." in messages[0]["text"]
+
+
+def test_gui_renders_approved_desktop_click_text():
+    messages = []
+    gui = LocalPilotGUI.__new__(LocalPilotGUI)
+    gui._append_chat_message = lambda speaker, text, speaker_tag, body_tag="body": messages.append(
+        {"speaker": speaker, "text": text, "speaker_tag": speaker_tag, "body_tag": body_tag}
+    )
+
+    gui._render_agent_result(
+        {
+            "ok": True,
+            "transcript": [
+                {
+                    "type": "tool_result",
+                    "payload": {
+                        "ok": True,
+                        "tool": "desktop_execute_suggestion",
+                        "result": {
+                            "suggestion_id": "desk_suggest_demo",
+                            "action": "click",
+                            "target": "Google search bar",
+                            "x": 735,
+                            "y": 410,
+                            "executed": True,
+                        },
+                    },
+                }
+            ],
+        }
+    )
+
+    assert "Approved desktop click executed." in messages[0]["text"]
+    assert "Target: Google search bar" in messages[0]["text"]
 
 
 def test_agent_mode_returns_structured_error_when_agent_raises():
