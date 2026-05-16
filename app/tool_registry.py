@@ -471,7 +471,8 @@ class ToolRegistry:
     def get(self, name: str) -> ToolDefinition | None:
         return self._tools.get(name)
 
-    def list_tools(self) -> list[dict[str, Any]]:
+    def list_tools(self, names: list[str] | None = None) -> list[dict[str, Any]]:
+        allowed = set(names or [])
         return [
             {
                 "name": tool.name,
@@ -481,6 +482,7 @@ class ToolRegistry:
                 "approval_required": tool.approval_required,
             }
             for tool in self._tools.values()
+            if not allowed or tool.name in allowed
         ]
 
     def execute_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:

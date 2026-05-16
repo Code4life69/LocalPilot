@@ -18,9 +18,16 @@
   },
   "lmstudio": {
     "host": "http://localhost:1234/v1",
-    "timeout_seconds": 90,
+    "timeout_seconds": 120,
     "text_model": "qwen2.5-coder-14b-instruct",
+    "agent_planner_model": "qwen2.5-coder-14b-instruct",
     "vision_model": "qwen3-vl-8b-instruct",
+    "review_model": "qwen3.5-27b",
+    "planner_timeout_seconds": 120,
+    "planner_context_length": 16384,
+    "planner_minimum_context_length": 8192,
+    "planner_recommended_context_length": 16384,
+    "planner_max_concurrent_predictions": 1,
     "screenshot_dir": "logs/screenshots"
   },
   "model_lifecycle": {

@@ -71,6 +71,18 @@ class FakeLLM:
         return self.responses.pop(0)
 
 
+class OverflowThenSuccessLLM(FakeLLM):
+    def __init__(self, responses):
+        super().__init__(responses)
+
+    def chat_text(self, messages, model, max_tokens):
+        self.calls.append({"messages": messages, "model": model, "max_tokens": max_tokens})
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
 def test_agent_parses_tool_json_from_fenced_block():
     agent = LocalPilotAgent(llm_client=FakeLLM([]), tool_registry=FakeRegistry())
 
@@ -179,8 +191,22 @@ def test_agent_loads_pilot_rules_into_prompt(tmp_path):
 
     prompt = agent._build_system_prompt()
 
-    assert "Pilot rules:" in prompt
+    assert "Rules:" in prompt
     assert "The AI must choose tools." in prompt
+
+
+def test_agent_reports_low_planner_context_warning():
+    agent = LocalPilotAgent(
+        llm_client=FakeLLM([]),
+        tool_registry=FakeRegistry(),
+        planner_context_length=4096,
+    )
+
+    warning = agent.planner_context_warning()
+
+    assert warning is not None
+    assert "too small" in warning.lower()
+    assert "8192" in warning
 
 
 def test_agent_writes_session_record(tmp_path):
@@ -261,6 +287,33 @@ def test_agent_followup_continue_uses_active_task_context(tmp_path):
     assert "open Google and search cats" in first_user_message
 
 
+def test_agent_short_clarification_uses_active_task_context(tmp_path):
+    memory_dir = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "capabilities.json").write_text("{}", encoding="utf-8")
+    memory = MemoryStore(memory_dir, config_dir / "capabilities.json")
+    memory.save_current_task(
+        {
+            "active_task_id": "task123",
+            "original_user_task": "Describe my screen briefly.",
+            "latest_user_message": "Describe my screen briefly.",
+            "mode": "agent",
+            "status": "completed",
+            "last_tool_result_summary": "Screenshot analysis: ChatGPT with recent chats in the left sidebar.",
+        }
+    )
+    llm = FakeLLM([json.dumps({"type": "final", "message": "The sidebar shows recent chats."})])
+    agent = LocalPilotAgent(llm_client=llm, tool_registry=FakeRegistry(), memory_store=memory, root_dir=tmp_path)
+
+    result = agent.run_task("What about the sidebar?")
+
+    assert result["ok"] is True
+    first_user_message = llm.calls[0]["messages"][1]["content"]
+    assert "continue the active task" in first_user_message.lower()
+    assert "what about the sidebar?" in first_user_message.lower()
+
+
 def test_agent_persists_tool_result_summary_and_recent_turns_for_followups(tmp_path):
     memory_dir = tmp_path / "memory"
     config_dir = tmp_path / "config"
@@ -300,7 +353,100 @@ def test_agent_persists_tool_result_summary_and_recent_turns_for_followups(tmp_p
     system_prompt = second_llm.calls[0]["messages"][0]["content"]
     assert "Screenshot analysis:" in system_prompt
     assert "ChatGPT web interface" in system_prompt
-    assert "Recent conversation turns:" in system_prompt
+    assert "Recent messages:" in system_prompt
+
+
+def test_agent_retries_once_with_ultra_compact_prompt_after_context_overflow(tmp_path):
+    memory_dir = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "capabilities.json").write_text("{}", encoding="utf-8")
+    memory = MemoryStore(memory_dir, config_dir / "capabilities.json")
+    memory.save_current_task(
+        {
+            "active_task_id": "task123",
+            "original_user_task": "Open Google and search cats.",
+            "latest_user_message": "continue",
+            "mode": "agent",
+            "status": "active",
+            "recent_tool_calls": [{"tool": "browser_search", "args": {"query": "cats"}}],
+            "last_tool_result_summary": "browser_search -> cats - Google Search",
+        }
+    )
+    llm = OverflowThenSuccessLLM(
+        [
+            RuntimeError(
+                'LM Studio request failed: 400 Client Error | response: {"error":"The number of tokens to keep from the initial prompt is greater than the context length (n_keep: 4240>= n_ctx: 4096)."}'
+            ),
+            json.dumps({"type": "final", "message": "Still on the cats search results."}),
+        ]
+    )
+    agent = LocalPilotAgent(llm_client=llm, tool_registry=FakeRegistry(), memory_store=memory, root_dir=tmp_path)
+
+    result = agent.run_task("continue")
+
+    assert result["ok"] is True
+    assert result["message"] == "Still on the cats search results."
+    assert len(llm.calls) == 2
+    assert "browser_search" in llm.calls[1]["messages"][0]["content"]
+    assert "desktop_suggest_action" not in llm.calls[1]["messages"][0]["content"]
+
+
+def test_agent_failed_followup_keeps_current_task_retryable_after_context_overflow(tmp_path):
+    memory_dir = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "capabilities.json").write_text("{}", encoding="utf-8")
+    memory = MemoryStore(memory_dir, config_dir / "capabilities.json")
+    memory.save_current_task(
+        {
+            "active_task_id": "task123",
+            "original_user_task": "Open Google and search cats.",
+            "latest_user_message": "continue",
+            "mode": "agent",
+            "status": "active",
+            "recent_tool_calls": [{"tool": "browser_search", "args": {"query": "cats"}}],
+            "last_tool_result_summary": "browser_search -> cats - Google Search",
+        }
+    )
+    overflow_error = RuntimeError(
+        'LM Studio request failed: 400 Client Error | response: {"error":"The number of tokens to keep from the initial prompt is greater than the context length (n_keep: 4240>= n_ctx: 4096)."}'
+    )
+    llm = OverflowThenSuccessLLM([overflow_error, overflow_error])
+    agent = LocalPilotAgent(llm_client=llm, tool_registry=FakeRegistry(), memory_store=memory, root_dir=tmp_path)
+
+    result = agent.run_task("what did you look up?")
+
+    assert result["ok"] is False
+    assert result["status"] == "failed_retryable"
+    assert "Increase the planner model context" in result["error"]
+    current_task = memory.load_current_task()
+    assert current_task is not None
+    assert current_task["active_task_id"] == "task123"
+    assert current_task["status"] == "failed_retryable"
+    assert "Increase the planner context" in current_task["retry_suggestion"]
+    assert "planner prompt exceeded" in current_task["last_error"]
+
+
+def test_agent_writes_planner_telemetry(tmp_path):
+    memory_dir = tmp_path / "memory"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "capabilities.json").write_text("{}", encoding="utf-8")
+    memory = MemoryStore(memory_dir, config_dir / "capabilities.json")
+    llm = FakeLLM([json.dumps({"type": "final", "message": "Done."})])
+    agent = LocalPilotAgent(llm_client=llm, tool_registry=FakeRegistry(), memory_store=memory, root_dir=tmp_path)
+
+    result = agent.run_task("describe my screen")
+
+    assert result["ok"] is True
+    telemetry_path = tmp_path / "logs" / "agent_planner.log"
+    entry = json.loads(telemetry_path.read_text(encoding="utf-8").strip().splitlines()[-1])
+    assert entry["task_id"] == result["task_id"]
+    assert entry["model"] == "qwen2.5-coder-14b-instruct"
+    assert entry["tool_count"] >= 1
+    assert entry["prompt_char_count"] > 0
+    assert "take_screenshot" in entry["tool_names"]
 
 
 def test_no_hardcoded_google_cats_flow_exists():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,6 +10,7 @@ from typing import Any
 
 from app.lmstudio_client import LMStudioClient
 from app.memory import MemoryStore
+from app.prompt_builder import CONTEXT_MINIMUM_USABLE, CONTEXT_RECOMMENDED, PromptBuild, PromptBuilder
 from app.tool_registry import ToolRegistry
 
 
@@ -27,6 +29,10 @@ class LocalPilotAgent:
         max_steps: int = 12,
         memory_store: MemoryStore | None = None,
         root_dir: str | Path | None = None,
+        planner_context_length: int = CONTEXT_RECOMMENDED,
+        minimum_context_length: int = CONTEXT_MINIMUM_USABLE,
+        recommended_context_length: int = CONTEXT_RECOMMENDED,
+        planner_timeout_seconds: int = 120,
     ) -> None:
         self.llm_client = llm_client
         self.tool_registry = tool_registry
@@ -34,6 +40,19 @@ class LocalPilotAgent:
         self.max_steps = max_steps
         self.memory_store = memory_store
         self.root_dir = Path(root_dir).resolve() if root_dir is not None else None
+        self.planner_timeout_seconds = max(int(planner_timeout_seconds or 120), 1)
+        self.prompt_builder = PromptBuilder(
+            planner_context_length=planner_context_length,
+            minimum_context_length=minimum_context_length,
+            recommended_context_length=recommended_context_length,
+        )
+        if self.root_dir is not None:
+            self.logs_dir = self.root_dir / "logs"
+            self.logs_dir.mkdir(parents=True, exist_ok=True)
+            self.planner_log_path = self.logs_dir / "agent_planner.log"
+        else:
+            self.logs_dir = None
+            self.planner_log_path = None
 
     def parse_agent_response(self, text: str) -> dict[str, Any]:
         stripped = text.strip()
@@ -70,36 +89,33 @@ class LocalPilotAgent:
             raise ValueError("Agent response type must be one of: tool_call, final, question.")
         return payload
 
-    def _build_system_prompt(self, working_memory: str = "") -> str:
-        tools_json = json.dumps(self.tool_registry.list_tools(), indent=2)
-        prompt = (
-            "You are LocalPilot, an AI agent. Python is only your tool harness.\n"
-            "The user does not want to chat with Python. The user chats with the AI agent.\n"
-            "You must decide the plan, choose tools, inspect tool results, and decide when the task is done.\n"
-            "Never pretend a tool succeeded. Never claim to have seen output you were not given.\n"
-            "For websites, prefer Puppeteer-controlled browser tools before desktop mouse tools.\n"
-            "Use browser DOM/text tools for website interaction and screenshot vision tools for visual understanding.\n"
-            "Use desktop_suggest_action only for visible Windows desktop or non-browser UI tasks.\n"
-            "For desktop tasks in this milestone, observe first, suggest second, and never execute desktop click, type, key press, or hotkey actions.\n"
-            "If you need a visual desktop target, capture a screenshot first and then ask for a dry-run suggestion.\n"
-            "desktop_move_mouse_preview is preview-only and still requires approval.\n"
-            "For timers or reminders on this PC, use set_timer, list_timers, or cancel_timer.\n"
-            "Never use run_command with sleep or timeout as a fake timer.\n"
-            "When a browser task obviously needs multiple medium-risk steps, you may include an `approval_plan` object on the first tool call.\n"
-            "Reply with JSON only.\n"
-            "Allowed response formats:\n"
-            '{"type":"tool_call","tool":"tool_name","args":{},"reason":"why this tool is needed"}\n'
-            '{"type":"final","message":"final answer for the user"}\n'
-            '{"type":"question","message":"one clarification question"}\n'
-            "Available tools:\n"
-            f"{tools_json}"
+    def planner_context_warning(self) -> str | None:
+        return self.prompt_builder.planner_context_warning()
+
+    def _build_prompt(self, user_message: str, current_task: dict[str, Any] | None, prompt_mode: str = "standard") -> PromptBuild:
+        return self.prompt_builder.build(
+            user_message=user_message,
+            current_task=current_task,
+            available_tools=self.tool_registry.list_tools(),
+            rules_text=self._load_pilot_rules(),
+            prompt_mode=prompt_mode,
         )
-        rules_text = self._load_pilot_rules()
-        if rules_text:
-            prompt += f"\n\nPilot rules:\n{rules_text}"
+
+    def _build_system_prompt(
+        self,
+        working_memory: str = "",
+        user_message: str = "",
+        current_task: dict[str, Any] | None = None,
+        prompt_mode: str = "standard",
+    ) -> str:
+        prompt_build = self._build_prompt(user_message or "Plan the next best step.", current_task, prompt_mode=prompt_mode)
         if working_memory:
-            prompt += f"\n\nWorking memory:\n{working_memory}"
-        return prompt
+            base_prompt = prompt_build.system_prompt.split("\nWorking memory:\n", 1)[0]
+            return f"{base_prompt}\nWorking memory:\n{working_memory}"
+        return prompt_build.system_prompt
+
+    def _build_working_memory(self, current_task: dict[str, Any] | None, user_message: str = "") -> str:
+        return self._build_prompt(user_message or "Continue the active task.", current_task).working_memory
 
     def _load_pilot_rules(self) -> str:
         if self.root_dir is None:
@@ -109,59 +125,20 @@ class LocalPilotAgent:
             return ""
         return rules_path.read_text(encoding="utf-8").strip()
 
-    def _build_working_memory(self, current_task: dict[str, Any] | None) -> str:
-        lines: list[str] = []
-        if current_task:
-            lines.extend(
-                [
-                    f"Current active task id: {current_task.get('active_task_id', '')}",
-                    f"Original task: {current_task.get('original_user_task', '')}",
-                    f"Latest user message: {current_task.get('latest_user_message', '')}",
-                    f"Status: {current_task.get('status', '')}",
-                ]
-            )
-            if current_task.get("status") in {"completed", "final"}:
-                lines.append("The last active task finished recently. If the user is clarifying or continuing it, keep this context.")
-            last_tool_call = current_task.get("last_tool_call") or {}
-            if isinstance(last_tool_call, dict) and last_tool_call.get("tool"):
-                lines.append(f"Last tool call: {last_tool_call.get('tool')} {json.dumps(last_tool_call.get('args', {}), ensure_ascii=True)}")
-            if current_task.get("last_tool_result_summary"):
-                lines.append(f"Last tool result: {current_task.get('last_tool_result_summary')}")
-            for recent_tool_call in (current_task.get("recent_tool_calls") or [])[-3:]:
-                if isinstance(recent_tool_call, dict) and recent_tool_call.get("tool"):
-                    lines.append(
-                        f"Recent tool call: {recent_tool_call.get('tool')} {json.dumps(recent_tool_call.get('args', {}), ensure_ascii=True)}"
-                    )
-            for recent_result_summary in (current_task.get("recent_tool_result_summaries") or [])[-3:]:
-                lines.append(f"Recent tool result: {recent_result_summary}")
-            last_approval = current_task.get("last_approval_request") or {}
-            if isinstance(last_approval, dict) and last_approval.get("summary"):
-                lines.append(f"Last approval request: {last_approval.get('summary')}")
-            if current_task.get("last_final_answer"):
-                lines.append(f"Last final answer: {current_task.get('last_final_answer')}")
-            for summary in (current_task.get("recent_step_summaries") or [])[-4:]:
-                lines.append(f"Recent step: {summary}")
-            recent_messages = current_task.get("recent_messages") or []
-            if recent_messages:
-                lines.append("Recent conversation turns:")
-                for message in recent_messages[-4:]:
-                    if not isinstance(message, dict):
-                        continue
-                    role = str(message.get("role", "message"))
-                    content = str(message.get("content", "")).strip()
-                    if content:
-                        lines.append(f"- {role}: {content}")
-        if self.memory_store is not None:
-            recent_sessions = self.memory_store.summarize_recent_sessions(limit=2)
-            if recent_sessions and recent_sessions != "No recent sessions.":
-                lines.append("Recent session summaries:")
-                lines.extend(recent_sessions.splitlines())
-        return "\n".join(line for line in lines if line)
-
     def _prepare_user_task(self, user_task: str, current_task: dict[str, Any] | None) -> tuple[str, str | None]:
         if self.memory_store is None or current_task is None:
             return user_task, None
         followup_kind = self.memory_store.followup_kind(user_task)
+        if followup_kind is None and self._should_continue_active_task(user_task, current_task):
+            active_task_id = str(current_task.get("active_task_id") or "") or None
+            original_task = str(current_task.get("original_user_task") or current_task.get("latest_user_message") or "")
+            return (
+                "Continue the active task using the saved context.\n"
+                f"Original task: {original_task}\n"
+                f"User follow-up: {user_task}\n"
+                "Answer the follow-up from the existing task context unless a new tool is required.",
+                active_task_id,
+            )
         if followup_kind is None:
             return user_task, None
         active_task_id = str(current_task.get("active_task_id") or "") or None
@@ -202,6 +179,30 @@ class LocalPilotAgent:
             active_task_id,
         )
 
+    def _should_continue_active_task(self, user_task: str, current_task: dict[str, Any]) -> bool:
+        active_task_id = str(current_task.get("active_task_id") or "").strip()
+        if not active_task_id:
+            return False
+        lowered = user_task.strip().lower()
+        if not lowered:
+            return False
+        followup_prefixes = (
+            "what about",
+            "what did",
+            "and ",
+            "also ",
+            "continue",
+            "try again",
+            "now what",
+            "what happened",
+            "what loaded",
+        )
+        if any(lowered.startswith(prefix) for prefix in followup_prefixes):
+            return True
+        if len(lowered.split()) <= 6 and any(token in lowered for token in ("sidebar", "loaded", "that", "it", "there", "them")):
+            return True
+        return False
+
     def _current_task_status_for_question(self, question_text: str) -> str:
         lowered = question_text.lower()
         if any(token in lowered for token in ("approve", "approval", "allow", "confirm")):
@@ -223,6 +224,14 @@ class LocalPilotAgent:
             return
         recent_messages.append(candidate)
 
+    def _truncate_text(self, text: str, max_chars: int) -> str:
+        cleaned = " ".join(text.split())
+        if len(cleaned) <= max_chars:
+            return cleaned
+        if max_chars <= 1:
+            return cleaned[:max_chars]
+        return cleaned[: max_chars - 3].rstrip() + "..."
+
     def _summarize_tool_result_for_memory(
         self,
         tool_payload: dict[str, Any],
@@ -230,12 +239,12 @@ class LocalPilotAgent:
     ) -> str:
         tool_name = str(tool_payload.get("tool", "tool"))
         if not tool_result.get("ok"):
-            return f"{tool_name} failed: {tool_result.get('error', 'unknown error')}"
+            return self._truncate_text(f"{tool_name} failed: {tool_result.get('error', 'unknown error')}", 800)
         result_payload = tool_result.get("result") or {}
         if not isinstance(result_payload, dict):
             return f"{tool_name} succeeded."
         if tool_name == "analyze_screenshot":
-            description = str(result_payload.get("description", "")).strip()
+            description = self._truncate_text(str(result_payload.get("description", "")).strip(), 760)
             return f"Screenshot analysis: {description}" if description else "Screenshot analysis completed."
         if tool_name == "desktop_suggest_action":
             action = str(result_payload.get("action", "unknown"))
@@ -245,31 +254,31 @@ class LocalPilotAgent:
             confidence_text = ""
             if isinstance(confidence, (int, float)):
                 confidence_text = f" at {confidence:.0%} confidence"
-            return f"Suggested desktop action: {action} {target}{confidence_text}, risk={risk}."
+            return self._truncate_text(f"Suggested desktop action: {action} {target}{confidence_text}, risk={risk}.", 400)
         if tool_name == "take_screenshot":
             path = str(result_payload.get("path", "")).strip()
-            return f"Screenshot saved: {path}" if path else "Screenshot captured."
+            return self._truncate_text(f"Screenshot saved: {path}" if path else "Screenshot captured.", 400)
         if tool_name.startswith("browser_"):
             title = str(result_payload.get("title", "")).strip()
             url = str(result_payload.get("url", "")).strip()
-            text_preview = str(result_payload.get("text_preview", "")).strip()
+            text_preview = self._truncate_text(str(result_payload.get("text_preview", "")).strip(), 260)
             parts = [part for part in [title, url, text_preview] if part]
-            return f"{tool_name} -> {' | '.join(parts)}" if parts else f"{tool_name} succeeded."
+            return self._truncate_text(f"{tool_name} -> {' | '.join(parts)}" if parts else f"{tool_name} succeeded.", 400)
         if tool_name == "set_timer":
             label = str(result_payload.get("label", "Timer")).strip()
             fires_at = str(result_payload.get("fires_at", "")).strip()
-            return f"Timer set: {label} for {fires_at}."
+            return self._truncate_text(f"Timer set: {label} for {fires_at}.", 400)
         if tool_name == "write_file":
             path = str(result_payload.get("path", "")).strip()
             checkpoint_id = str(result_payload.get("checkpoint_id", "")).strip()
             if path and checkpoint_id:
-                return f"File written: {path} with checkpoint {checkpoint_id}."
+                return self._truncate_text(f"File written: {path} with checkpoint {checkpoint_id}.", 400)
             if path:
-                return f"File written: {path}."
+                return self._truncate_text(f"File written: {path}.", 400)
         if result_payload.get("message"):
-            return str(result_payload["message"])
+            return self._truncate_text(str(result_payload["message"]), 400)
         if result_payload.get("path"):
-            return f"{tool_name} path: {result_payload['path']}"
+            return self._truncate_text(f"{tool_name} path: {result_payload['path']}", 400)
         return f"{tool_name} succeeded."
 
     def _update_current_task_after_step(
@@ -282,10 +291,14 @@ class LocalPilotAgent:
         status: str | None = None,
         final_answer: str | None = None,
         question: str | None = None,
+        last_error: str | None = None,
+        retry_suggestion: str | None = None,
     ) -> None:
         if self.memory_store is None:
             return
-        current_task = self.memory_store.load_current_task() or {}
+        loaded_task = self.memory_store.load_current_task() or {}
+        same_task = str(loaded_task.get("active_task_id") or "") == task_id
+        current_task = loaded_task if same_task else {}
         recent_step_summaries = list(current_task.get("recent_step_summaries") or [])
         recent_tool_calls = list(current_task.get("recent_tool_calls") or [])
         recent_tool_result_summaries = list(current_task.get("recent_tool_result_summaries") or [])
@@ -300,8 +313,9 @@ class LocalPilotAgent:
                 if tool_result.get("approval"):
                     summary += f" | approval: {tool_result['approval'].get('summary', '')}"
                 last_tool_result_summary = self._summarize_tool_result_for_memory(tool_payload, tool_result)
-                recent_tool_result_summaries.append(last_tool_result_summary)
-            recent_step_summaries.append(summary)
+                if last_tool_result_summary:
+                    recent_tool_result_summaries.append(self._truncate_text(last_tool_result_summary, 400))
+            recent_step_summaries.append(self._truncate_text(summary, 240))
             recent_tool_calls.append({"tool": tool_payload.get("tool"), "args": tool_payload.get("args", {})})
         if final_answer is not None:
             self._append_recent_message(recent_messages, role="assistant", content=final_answer)
@@ -309,29 +323,151 @@ class LocalPilotAgent:
             self._append_recent_message(recent_messages, role="assistant", content=question)
         updates: dict[str, Any] = {
             "active_task_id": task_id,
-            "original_user_task": original_user_task,
-            "latest_user_message": latest_user_message,
+            "original_user_task": self._truncate_text(original_user_task, 800),
+            "latest_user_message": self._truncate_text(latest_user_message, 300),
             "mode": "agent",
             "status": status or current_task.get("status", "active"),
             "last_tool_call": tool_payload or current_task.get("last_tool_call"),
             "last_approval_request": (tool_result or {}).get("approval") if tool_result else current_task.get("last_approval_request"),
-            "last_final_answer": final_answer if final_answer is not None else current_task.get("last_final_answer"),
+            "last_final_answer": self._truncate_text(final_answer, 600) if final_answer is not None else current_task.get("last_final_answer"),
             "recent_step_summaries": recent_step_summaries[-6:],
             "recent_tool_calls": recent_tool_calls[-5:],
-            "last_tool_result_summary": last_tool_result_summary,
+            "last_tool_result_summary": self._truncate_text(str(last_tool_result_summary or ""), 800) if last_tool_result_summary else "",
             "recent_tool_result_summaries": recent_tool_result_summaries[-5:],
-            "recent_messages": recent_messages[-8:],
+            "recent_messages": [
+                {
+                    "role": str(message.get("role", "message")),
+                    "content": self._truncate_text(str(message.get("content", "")), 300),
+                }
+                for message in recent_messages[-8:]
+                if isinstance(message, dict)
+            ],
+            "last_error": self._truncate_text(last_error, 600) if last_error is not None else current_task.get("last_error", ""),
+            "retry_suggestion": self._truncate_text(retry_suggestion, 200) if retry_suggestion is not None else current_task.get("retry_suggestion", ""),
         }
         if question is not None:
-            updates["last_question"] = question
+            updates["last_question"] = self._truncate_text(question, 300)
         self.memory_store.update_current_task(**updates)
+
+    def _planner_response_preview(self, response_text: str) -> str:
+        return self._truncate_text(response_text, 240)
+
+    def _log_planner_call(
+        self,
+        *,
+        task_id: str,
+        prompt_build: PromptBuild,
+        start_time: float,
+        success: bool,
+        response_text: str = "",
+        error_text: str = "",
+    ) -> None:
+        if self.planner_log_path is None:
+            return
+        duration = max(time.perf_counter() - start_time, 0.0)
+        entry = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "task_id": task_id,
+            "model": self.planner_model,
+            "tool_count": prompt_build.tool_count,
+            "tool_names": prompt_build.tool_names,
+            "prompt_char_count": len(prompt_build.system_prompt),
+            "working_memory_char_count": len(prompt_build.working_memory),
+            "timeout_seconds": self.planner_timeout_seconds,
+            "duration_seconds": round(duration, 3),
+            "success": success,
+            "error": error_text or None,
+            "response_preview": self._planner_response_preview(response_text) if response_text else "",
+            "task_category": prompt_build.task_category,
+            "prompt_mode": prompt_build.prompt_mode,
+        }
+        with self.planner_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=True) + "\n")
+
+    def _is_context_overflow_error(self, error_text: str) -> bool:
+        lowered = error_text.lower()
+        return any(
+            token in lowered
+            for token in (
+                "n_keep",
+                "n_ctx",
+                "context length",
+                "context.",
+                "prompt too long",
+                "exceeded the loaded lm studio context",
+            )
+        )
+
+    def _context_overflow_message(self) -> str:
+        return (
+            "The agent memory is available, but the planner prompt exceeded the loaded LM Studio context. "
+            f"Increase the planner model context to {CONTEXT_MINIMUM_USABLE} or {CONTEXT_RECOMMENDED}, or retry with compact mode."
+        )
+
+    def _call_planner(self, task_id: str, prompt_build: PromptBuild, user_message: str) -> str:
+        messages = [
+            {"role": "system", "content": prompt_build.system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+        started = time.perf_counter()
+        try:
+            response_text = self.llm_client.chat_text(
+                messages=messages,
+                model=self.planner_model,
+                max_tokens=1024,
+            )
+        except Exception as exc:
+            self._log_planner_call(
+                task_id=task_id,
+                prompt_build=prompt_build,
+                start_time=started,
+                success=False,
+                error_text=str(exc),
+            )
+            raise
+        self._log_planner_call(
+            task_id=task_id,
+            prompt_build=prompt_build,
+            start_time=started,
+            success=True,
+            response_text=response_text,
+        )
+        return response_text
+
+    def _planner_instruction_for_tool_result(self, tool_payload: dict[str, Any], tool_result: dict[str, Any]) -> str:
+        summary = self._summarize_tool_result_for_memory(tool_payload, tool_result)
+        compact_result = json.dumps(self.prompt_builder.compact_json(tool_result), ensure_ascii=True)
+        return (
+            "Continue the active task.\n"
+            f"Last tool: {tool_payload.get('tool', 'tool')}\n"
+            f"Reason: {self._truncate_text(str(tool_payload.get('reason', '')), 200)}\n"
+            f"Tool result summary: {self._truncate_text(summary, 500)}\n"
+            f"Structured result: {self._truncate_text(compact_result, 700)}\n"
+            "Decide the next single best step. Reply with JSON only."
+        )
+
+    def _planner_call_with_recovery(
+        self,
+        *,
+        task_id: str,
+        user_message: str,
+        current_task: dict[str, Any] | None,
+    ) -> str:
+        prompt_build = self._build_prompt(user_message, current_task, prompt_mode="standard")
+        try:
+            return self._call_planner(task_id, prompt_build, user_message)
+        except Exception as exc:
+            if not self._is_context_overflow_error(str(exc)):
+                raise
+            ultra_message = self._truncate_text(user_message, 600)
+            ultra_prompt = self._build_prompt(ultra_message, current_task, prompt_mode="ultra_compact")
+            return self._call_planner(task_id, ultra_prompt, ultra_message)
 
     def run_task(self, user_task: str, continue_task_id: str | None = None) -> dict[str, Any]:
         current_task = self.memory_store.load_current_task() if self.memory_store is not None else None
         effective_user_task, suggested_task_id = self._prepare_user_task(user_task, current_task)
         task_id = continue_task_id or suggested_task_id or uuid.uuid4().hex[:12]
         started_at = datetime.now().isoformat(timespec="seconds")
-        working_memory = self._build_working_memory(current_task)
         original_user_task = (
             str(current_task.get("original_user_task"))
             if current_task is not None and str(current_task.get("active_task_id") or "") == task_id
@@ -342,20 +478,45 @@ class LocalPilotAgent:
             original_user_task=original_user_task,
             latest_user_message=user_task,
             status="active",
+            last_error="",
+            retry_suggestion="",
         )
-        messages = [
-            {"role": "system", "content": self._build_system_prompt(working_memory)},
-            {"role": "user", "content": effective_user_task},
-        ]
         transcript: list[dict[str, Any]] = []
         steps: list[dict[str, Any]] = []
+        planner_instruction = effective_user_task
 
         for step_number in range(1, self.max_steps + 1):
-            response_text = self.llm_client.chat_text(
-                messages=messages,
-                model=self.planner_model,
-                max_tokens=1024,
-            )
+            current_task = self.memory_store.load_current_task() if self.memory_store is not None else current_task
+            try:
+                response_text = self._planner_call_with_recovery(
+                    task_id=task_id,
+                    user_message=planner_instruction,
+                    current_task=current_task,
+                )
+            except Exception as exc:
+                retryable = self._is_context_overflow_error(str(exc))
+                error_message = self._context_overflow_message() if retryable else str(exc)
+                status = "failed_retryable" if retryable else "failed"
+                suggestion = "Increase the planner context to 8192 or 16384, or retry with compact mode." if retryable else ""
+                self._update_current_task_after_step(
+                    task_id=task_id,
+                    original_user_task=original_user_task,
+                    latest_user_message=user_task,
+                    status=status,
+                    last_error=error_message,
+                    retry_suggestion=suggestion,
+                )
+                result = {
+                    "ok": False,
+                    "status": status,
+                    "transcript": transcript,
+                    "steps": steps,
+                    "task_id": task_id,
+                    "error": error_message,
+                }
+                self._persist_session(result, task_id, user_task, started_at)
+                return result
+
             parsed = self.parse_agent_response(response_text)
             step_record: dict[str, Any] = {
                 "step": step_number,
@@ -388,18 +549,10 @@ class LocalPilotAgent:
                     tool_payload=tool_payload,
                     tool_result=tool_result,
                     status="active",
+                    last_error="",
+                    retry_suggestion="",
                 )
-                messages.append({"role": "assistant", "content": json.dumps(parsed, ensure_ascii=True)})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "Tool result:\n"
-                            f"{json.dumps(tool_result, ensure_ascii=True)}\n"
-                            "Decide the next best step. Reply with JSON only."
-                        ),
-                    }
-                )
+                planner_instruction = self._planner_instruction_for_tool_result(tool_payload, tool_result)
                 continue
 
             if parsed["type"] == "question":
@@ -413,8 +566,17 @@ class LocalPilotAgent:
                     latest_user_message=user_task,
                     status=question_status,
                     question=parsed["message"],
+                    last_error="",
+                    retry_suggestion="",
                 )
-                result = {"ok": True, "status": "question", "transcript": transcript, "steps": steps, "message": parsed["message"], "task_id": task_id}
+                result = {
+                    "ok": True,
+                    "status": "question",
+                    "transcript": transcript,
+                    "steps": steps,
+                    "message": parsed["message"],
+                    "task_id": task_id,
+                }
                 self._persist_session(result, task_id, user_task, started_at)
                 return result
 
@@ -427,14 +589,23 @@ class LocalPilotAgent:
                 latest_user_message=user_task,
                 status="completed",
                 final_answer=parsed["message"],
+                last_error="",
+                retry_suggestion="",
             )
-            result = {"ok": True, "status": "final", "transcript": transcript, "steps": steps, "message": parsed["message"], "task_id": task_id}
+            result = {
+                "ok": True,
+                "status": "final",
+                "transcript": transcript,
+                "steps": steps,
+                "message": parsed["message"],
+                "task_id": task_id,
+            }
             self._persist_session(result, task_id, user_task, started_at)
             return result
 
         result = {
             "ok": False,
-            "status": "error",
+            "status": "failed",
             "transcript": transcript,
             "steps": steps,
             "task_id": task_id,
@@ -446,6 +617,8 @@ class LocalPilotAgent:
             latest_user_message=user_task,
             status="failed",
             final_answer=result["error"],
+            last_error=result["error"],
+            retry_suggestion="Retry the task with a narrower scope.",
         )
         self._persist_session(result, task_id, user_task, started_at)
         return result
@@ -470,7 +643,7 @@ class LocalPilotAgent:
         unresolved_next_steps = ""
         if result.get("status") == "question":
             unresolved_next_steps = result.get("message", "")
-        elif result.get("status") == "error":
+        elif result.get("status") in {"error", "failed", "failed_retryable"}:
             unresolved_next_steps = result.get("error", "")
         record = {
             "task_id": task_id,

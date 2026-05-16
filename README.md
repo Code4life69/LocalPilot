@@ -140,8 +140,8 @@ Recommended order on this RTX 3060 machine:
 
 Performance notes:
 
-- `4096` context is the safe default for this machine.
-- `8192` can be tested later with the extended performance profile.
+- The old `4096` context default is not reliable for LM Studio agent follow-ups.
+- Use `8192` at minimum for the planner model, and prefer `16384`.
 - Only one heavy model should stay loaded at a time.
 - `qwen3:30b` is slow quality mode only and should not be the everyday default.
 
@@ -245,6 +245,26 @@ python localpilot.py --agent-cli
 ```
 
 For websites, the agent prefers Puppeteer-controlled browser tools over desktop mouse tools.
+
+## LM Studio Agent Planner
+
+LocalPilot's AI-driven agent planner is intended to run through LM Studio with:
+
+- Planner model: `qwen2.5-coder-14b-instruct`
+- Vision model: `qwen3-vl-8b-instruct`
+- Recommended planner context: `16384`
+- Minimum usable planner context: `8192`
+- Bad for follow-ups: `4096`
+- Recommended planner concurrency: `Max Concurrent Predictions = 1`
+
+Recommended LM Studio settings for the planner model:
+
+```text
+Context Length: 16384
+Max Concurrent Predictions: 1
+```
+
+If LocalPilot warns that the planner context is too small, increase the LM Studio context length before testing multi-step follow-ups like `continue`, `what happened`, or screenshot and browser clarifications.
 
 For double-click launch on Windows, use [Run LocalPilot.bat](</C:/LocalPilot/Run LocalPilot.bat>). It will:
 

@@ -105,10 +105,11 @@ def run_agent_cli(root_dir: str | Path) -> int:
     )
     timers = TimerManager(root_path / settings.get("memory_dir", "memory") / "timers.json")
     lmstudio_settings = settings.get("lmstudio", {})
+    planner_model = lmstudio_settings.get("agent_planner_model", lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"))
     lmstudio_client = LMStudioClient(
         host=lmstudio_settings.get("host", "http://localhost:1234/v1"),
-        timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 90)),
-        default_text_model=lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"),
+        timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 120)),
+        default_text_model=planner_model,
         default_vision_model=lmstudio_settings.get("vision_model", "qwen3-vl-8b-instruct"),
     )
     safety = SafetyManager(workspace_root=root_path / "workspace")
@@ -125,13 +126,20 @@ def run_agent_cli(root_dir: str | Path) -> int:
     agent = LocalPilotAgent(
         llm_client=lmstudio_client,
         tool_registry=tool_registry,
-        planner_model=lmstudio_client.default_text_model,
+        planner_model=planner_model,
         memory_store=memory,
         root_dir=root_path,
+        planner_context_length=int(lmstudio_settings.get("planner_context_length", 16384)),
+        minimum_context_length=int(lmstudio_settings.get("planner_minimum_context_length", 8192)),
+        recommended_context_length=int(lmstudio_settings.get("planner_recommended_context_length", 16384)),
+        planner_timeout_seconds=int(lmstudio_settings.get("planner_timeout_seconds", lmstudio_settings.get("timeout_seconds", 120))),
     )
 
     safe_console_print("LocalPilot Agent CLI")
     safe_console_print("Type 'exit' to quit.")
+    planner_context_warning = agent.planner_context_warning() if hasattr(agent, "planner_context_warning") else None
+    if planner_context_warning:
+        safe_console_print(planner_context_warning)
 
     while True:
         try:
@@ -174,10 +182,11 @@ class LocalPilotApp:
         self.operating_profiles = self._load_json(self.root_dir / "config" / "operating_profiles.json")
         self.logger = AppLogger(self.root_dir / self.settings["logs_dir"])
         lmstudio_settings = self.settings.get("lmstudio", {})
+        planner_model = lmstudio_settings.get("agent_planner_model", lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"))
         self.lmstudio = LMStudioClient(
             host=lmstudio_settings.get("host", "http://localhost:1234/v1"),
-            timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 90)),
-            default_text_model=lmstudio_settings.get("text_model", "qwen2.5-coder-14b-instruct"),
+            timeout_seconds=int(lmstudio_settings.get("timeout_seconds", 120)),
+            default_text_model=planner_model,
             default_vision_model=lmstudio_settings.get("vision_model", "qwen3-vl-8b-instruct"),
         )
         self.git_sync = GitSyncManager(self.root_dir, self.settings, self.logger)
@@ -226,10 +235,17 @@ class LocalPilotApp:
         self.agent = LocalPilotAgent(
             llm_client=self.lmstudio,
             tool_registry=self.tool_registry,
-            planner_model=self.lmstudio.default_text_model,
+            planner_model=planner_model,
             memory_store=self.memory,
             root_dir=self.root_dir,
+            planner_context_length=int(lmstudio_settings.get("planner_context_length", 16384)),
+            minimum_context_length=int(lmstudio_settings.get("planner_minimum_context_length", 8192)),
+            recommended_context_length=int(lmstudio_settings.get("planner_recommended_context_length", 16384)),
+            planner_timeout_seconds=int(lmstudio_settings.get("planner_timeout_seconds", lmstudio_settings.get("timeout_seconds", 120))),
         )
+        planner_context_warning = self.agent.planner_context_warning() if hasattr(self.agent, "planner_context_warning") else None
+        if planner_context_warning:
+            self.logger.event("Planner", planner_context_warning)
         self.gui: LocalPilotGUI | None = None
         self._shutdown_complete = False
         self.pending_followup: dict[str, Any] | None = None
